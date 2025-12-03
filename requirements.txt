@@ -1,0 +1,12 @@
+python-dotenv
+requests
+web3
+flask
+mysql-connector-python
+apscheduler
+web3-multicall
+w3multicall
+dotenv
+solana
+solders
+pytz

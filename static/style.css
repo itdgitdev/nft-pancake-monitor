@@ -1,0 +1,258 @@
+body {
+    font-family: Arial, sans-serif;
+    padding: 1rem;
+    background-color: #f5f5f5;
+}
+
+.container {
+    background: #fff;
+    padding: 2rem;
+    border-radius: 10px;
+    max-width: 100%;
+    margin: auto;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+.menu {
+    text-decoration: none;
+    font-size: 24px;
+    font-weight: bold;
+    color: #fff;
+    padding: 10px 15px;
+    background-color: #2c3e50;
+    border-radius: 10px;
+}
+
+.menu:hover {
+    text-decoration: underline;
+}
+
+h1 {
+    margin-bottom: 60px;
+}
+
+h1, h2 {
+    text-align: center;
+    color: #2c3e50;
+}
+
+strong{
+    word-break: break-word;
+}
+
+td strong{
+    word-break: normal;
+}
+
+form {
+    text-align: center;
+    margin-bottom: 2rem;
+    margin-bottom: 60px;
+}
+
+label {
+    font-weight: bold;
+    color: #2c3e50;
+}
+
+.input-group {
+    display: flex;
+    gap: 30px;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+}
+
+.button-group {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    flex-wrap: wrap; 
+}
+
+select {
+    width: 120px;
+    max-width: 90%;
+    padding: 10px;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+
+input[type="text"] {
+    width: 400px;
+    max-width: 90%;
+    padding: 10px;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+}
+
+button {
+    padding: 10px 20px;
+    font-size: 1rem;
+    background-color: #2ecc71;
+    border: none;
+    color: #fff;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background-color: #27ae60;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    margin-bottom: 20px;
+    font-size: 0.95rem;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    overflow-x: auto;
+}
+
+thead tr {
+    background-color: #2c3e50;
+    color: #fff;
+    text-align: left;
+}
+
+th, td {
+    padding: 6px 9px;
+    border: 1px solid #ddd;
+    text-align: left;
+}
+
+td a{
+    text-decoration: none;
+    color: #000
+}
+
+td a:hover{
+    text-decoration: underline;
+}
+
+tbody tr {
+    background-color: #f9f9f9;
+    transition: background-color 0.2s ease-in-out;
+}
+
+tbody tr:nth-child(even) {
+    background-color: #f1f1f1;
+}
+
+tbody tr:hover {
+    background-color: #e8f0fe;
+}
+
+h2 {
+    font-size: 1.4rem;
+    color: #2c3e50;
+    margin-top: 30px;
+    margin-bottom: 10px;
+}
+
+h2 span {
+    color: #3498db;
+    font-weight: 600;
+    word-break: break-word;
+}
+
+.pagination {
+    margin-bottom: 40px;
+    text-align: center;
+    padding: 10px;
+}
+
+.pagination a,
+.pagination strong {
+    display: inline-block;
+    margin: 0 5px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: bold;
+    font-size: 14px;
+    transition: background-color 0.3s ease;
+}
+
+.pagination a {
+    background-color: #f0f0f0;
+    color: #333;
+    border: 1px solid #ddd;
+}
+
+.pagination a:hover {
+    background-color: #2ecc71;
+    color: white;
+    border-color: #2ecc71;
+}
+
+.pagination strong {
+    background-color: #2ecc71;
+    color: white;
+    border: 1px solid #2ecc71;
+}
+
+
+/* ✅ Responsive tweaks */
+@media screen and (max-width: 768px) {
+
+    body{
+        padding: 0.5rem;
+    }
+    
+    .container {
+        padding: 1rem;
+    }
+
+    .input-group {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    input[type="text"] {
+        width: 100%;
+        font-size: 0.95rem;
+        margin-top: 10px;
+    }
+
+    button {
+        width: 100%;
+        font-size: 0.95rem;
+    }
+
+    table, thead, tbody, th, td, tr {
+        display: block;
+        width: 100%;
+    }
+
+    thead {
+        display: none;
+    }
+
+    tr {
+        margin-bottom: 1rem;
+        background-color: #fff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        padding: 10px;
+        border-radius: 8px;
+    }
+
+    td {
+        padding: 10px;
+        border: none;
+        position: relative;
+    }
+
+    td::before {
+        content: attr(data-label);
+        font-weight: bold;
+        display: block;
+        color: #2c3e50;
+        margin-bottom: 5px;
+    }
+}

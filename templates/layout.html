@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title or "NFT Position LP Tracker" }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/wallet_connect.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/mint_position.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/pool_ranges.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/transaction_style.css') }}">
+    <!-- Font Awesome CDN (nếu chưa có) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.dataTables.min.css">
+    <meta name="theme-color" content="#222">
+    <meta name="description" content="My Solana dApp trusted by many users">
+    <!-- Website Favicon -->
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/favicon.png') }}">
+</head>
+<body>
+    <div class="top-content">
+        <div class="theme-toggle">
+            <span class="mode-icons">🌞</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="themeToggle">
+                <span class="slider"></span>
+            </label>
+            <span class="mode-icons">🌙</span>
+        </div>
+<div class="wrapper">
+  <button class="btn-login" onclick="openChainSelector()">Connect Wallet</button>
+
+  <!-- Chain selection popup -->
+  <div class="chain-selector" style="display: none;">
+    <button class="chain-btn" onclick="connectWallet('evm')">
+    <div class="wallet-info">
+        <span class="wallet-name">MetaMask (EVM)</span>
+    </div>
+    </button>
+
+    <button class="chain-btn" onclick="connectWallet('solana_phantom')">
+    <div class="wallet-info">
+        <span class="wallet-name">Phantom (Solana)</span>
+    </div>
+    </button>
+
+    <!-- <button class="chain-btn" onclick="connectWallet('solana_metamask')">
+    <div class="wallet-info">
+        <span class="wallet-name">MetaMask (Solana Snap)</span>
+    </div>
+    </button> -->
+  </div>
+
+  <div class="wrapper-dropdown" style="display: none">
+    <div class="btn-logout" onclick="toggleDropdown()">
+      <div class="wrapper-content">
+        <div class="wrapper-icon">
+          <svg viewBox="0 0 24 24" color="primary" width="24px" xmlns="http://www.w3.org/2000/svg">
+            <path fill-rule="evenodd" clip-rule="evenodd"
+              d="M17 4C18.5 4 19 4.5 19 6L19 8C20.1046 8 21 8.89543 21 10L21 17C21 19 20 20 17.999 20H6C4 20 3 19 3 17L3 7C3 5.5 4.5 4 6 4L17 4ZM5 7C5 6.44772 5.44772 6 6 6L19 6L19 8L6 8C5.44772 8 5 7.55229 5 7ZM17 16C18 16 19.001 15 19 14C18.999 13 18 12 17 12C16 12 15 13 15 14C15 15 16 16 17 16Z"></path>
+          </svg>
+        </div>
+        <div class="wrapper-text address-text no-select"></div>
+      </div>
+    </div>
+    <div class="dropdown-content">
+      <div class="dropdown-container">
+        <div class="header-title">
+          <div class="account-img">
+            <div class="img">
+              <img class="wallet-logo" src="https://assets.pancakeswap.finance/web/wallets/metamask.png" alt="Wallet Logo">
+            </div>
+          </div>
+          <div class="wrapper-text address-text no-select"></div>
+        </div>
+        <div class="btn-disconnect-wrapper">
+          <button onclick="disconnectWallet()" class="btn-disconnect">
+            Disconnect
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+    </div>
+    <div class="container">
+        <div class="menu-bar">
+            <div class="nav-menu">
+                <a href="/" class="menu">Home</a>
+                <a href="/nft_blacklist" class="menu">NFT Blacklist</a>
+                <a href="/list-bond" class="menu">Bonds</a>
+                <a href="/list_pool" class="menu">Pools</a>
+                <a href="/transactions" class="menu">Transactions</a>
+                <a href="/price_range_pool_sol" class="menu">Pools Sol Range</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        {% block content %}
+        {% endblock %}
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/@web3auth/modal@10.0.5/dist/modal.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.15.0/dist/ethers.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/web3@1.10.0/dist/web3.min.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.2/lib/index.iife.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bs58@5.0.0/dist/bs58.min.js"></script>
+    <script src="https://unpkg.com/@solana/web3.js@1.95.3/lib/index.iife.min.js"></script>
+
+    <script src="{{ url_for('static', filename='js/wallet_connect.js') }}"></script>
+
+    <script>
+        function resetForm() {
+          setTimeout(() => {
+            document.getElementById("addressForm").reset();
+          }, 10);
+        }
+
+        const pageLoadTime = new Date();
+
+        function checkForUpdate() {
+            fetch('/check_update')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success' && data.last_update) {
+                        const lastUpdateTime = new Date(data.last_update);
+                        if (lastUpdateTime > pageLoadTime) {
+                            if (data.message) {
+                                localStorage.setItem('reloadMessage', data.message);
+                            }
+
+                            location.reload();
+                        }
+                    }
+                })
+                .catch(err => console.error("❌ Lỗi kiểm tra cập nhật:", err));
+        }
+
+        setInterval(checkForUpdate, (60000));
+
+        window.addEventListener("load", function () {
+        const reloadMessage = localStorage.getItem("reloadMessage");
+        if (reloadMessage) {
+            const messageDiv = document.getElementById("message-box").getElementsByClassName("message")[0];
+            if (messageDiv) {
+                messageDiv.innerText = reloadMessage;
+                messageDiv.style.display = 'block';
+            }
+            localStorage.removeItem("reloadMessage");
+        }
+    });
+
+    // Switch mode
+    const toggle = document.getElementById('themeToggle');
+
+    function applyTheme() {
+        const theme = localStorage.getItem('theme');
+        if (theme === 'dark') {
+            document.body.classList.add('dark-mode');
+            if (toggle) toggle.checked = true;
+        } else {
+            document.body.classList.remove('dark-mode');
+            if (toggle) toggle.checked = false;
+        }
+    }
+
+    if (toggle) {
+        toggle.addEventListener('change', () => {
+            const isDark = toggle.checked;
+            document.body.classList.toggle('dark-mode', isDark);
+            localStorage.setItem('theme', isDark ? 'dark' : 'light');
+        });
+    }
+
+    window.addEventListener('DOMContentLoaded', applyTheme);
+
+    // Sort column table
+    function sortTable(columnIndex, th) {
+        const table = document.getElementById("nftTable") || document.getElementById("positionTable") || document.getElementById("poolTable");
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.rows);
+        const isNumeric = (val) => /^-?[\d,.]+$/.test(val.replace(/[$,%]/g, ''));
+        const getCellValue = (row) => row.cells[columnIndex].innerText.trim().split('\n')[0];
+
+        // Xác định thứ tự sort hiện tại
+        let currentDir = th.getAttribute("data-dir");
+        let newDir = currentDir === "asc" ? "desc" : "asc";
+
+        // Xóa icon active cũ
+        const allThs = table.querySelectorAll("th");
+        allThs.forEach(t => {
+            t.removeAttribute("data-dir");
+            t.classList.remove("sort-asc", "sort-desc");
+            let icon = t.querySelector(".sort-icon");
+            if (icon) icon.classList.remove("active");
+        });
+
+        th.setAttribute("data-dir", newDir);
+        th.classList.add(newDir === "asc" ? "sort-asc" : "sort-desc");
+        let icon = th.querySelector(".sort-icon");
+        if (icon) icon.classList.add("active");
+
+        rows.sort((a, b) => {
+            let aVal = getCellValue(a);
+            let bVal = getCellValue(b);
+
+            if (isNumeric(aVal) && isNumeric(bVal)) {
+                aVal = parseFloat(aVal.replace(/,/g, ''));
+                bVal = parseFloat(bVal.replace(/,/g, ''));
+            }
+
+            return newDir === "asc"
+                ? (aVal > bVal ? 1 : aVal < bVal ? -1 : 0)
+                : (aVal < bVal ? 1 : aVal > bVal ? -1 : 0);
+        });
+
+        rows.forEach(row => tbody.appendChild(row));
+    }
+
+    // document.addEventListener("DOMContentLoaded", function () {
+    //     const checkboxes = document.querySelectorAll(".chain-filter");
+    //     const tableRows = document.querySelectorAll("#nftTable tbody tr");
+    //     const aprFilterCheckbox = document.getElementById("hide-zero-apr");
+    //     const filterStatus = document.querySelectorAll(".status-filter");
+
+    //     function applyFilter() {
+    //         const selectedChains = Array.from(checkboxes)
+    //             .filter(checkbox => checkbox.checked)
+    //             .map(checkbox => checkbox.value.toLowerCase());
+
+    //         const showOnlyZeroAPR = aprFilterCheckbox.checked;
+
+    //         const selectedStatus = Array.from(filterStatus)
+    //             .filter(status => status.checked)
+    //             .map(status => status.value.toLowerCase());
+
+    //         tableRows.forEach(row => {
+    //             const chain = row.querySelector("td[data-label='Chain']").textContent.trim().toLowerCase();
+    //             const apr1hCell = row.querySelector("td[data-label='Farm APR 1h']");
+    //             const apr1hText = apr1hCell ? apr1hCell.textContent.replace('%', '').trim() : "0";
+    //             const apr1h = parseFloat(apr1hText) || 0;
+    //             const status = row.querySelector("td[data-label='Status']").textContent.trim().toLowerCase();
+
+    //             const showByChain = selectedChains.includes(chain);
+    //             const showByAPR = !showOnlyZeroAPR || apr1h <= 0.0001;
+    //             const showByStatus = selectedStatus.includes(status);
+
+    //             row.style.display = (showByChain && showByAPR && showByStatus) ? "" : "none";
+    //         });
+    //     }
+
+    //     checkboxes.forEach(cb => cb.addEventListener("change", applyFilter));
+    //     aprFilterCheckbox.addEventListener("change", applyFilter);
+    //     filterStatus.forEach(cb => cb.addEventListener("change", applyFilter));
+
+    //     applyFilter();
+    // });
+
+
+document.addEventListener("DOMContentLoaded", function () {
+    const tokenFilterInput = document.getElementById("tokenFilter");
+    const checkboxes = document.querySelectorAll(".chain-filter");
+    const aprFilterCheckbox = document.getElementById("hide-zero-apr");
+    const filterStatus = document.querySelectorAll(".status-filter");
+
+    // --- SAVE & LOAD FILTER STATE ---
+    function saveFilterState() {
+        const state = {
+            token: tokenFilterInput ? tokenFilterInput.value.trim() : "",
+            chains: Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value),
+            hideZeroApr: aprFilterCheckbox.checked,
+            status: Array.from(filterStatus).filter(cb => cb.checked).map(cb => cb.value),
+        };
+        localStorage.setItem("nftFilterState", JSON.stringify(state));
+    }
+
+    function loadFilterState() {
+        const path = window.location.pathname;
+        const searchParams = new URLSearchParams(window.location.search);
+
+        // Nếu đang ở home (không có query param) → reset filter
+        if (path === "/" && !searchParams.toString()) {
+            return; // giữ nguyên filter mặc định trong HTML
+        }
+
+        // Ngược lại (ví dụ /?token=bonk) → restore từ localStorage
+        const rawState = localStorage.getItem("nftFilterState");
+        if (!rawState) return;
+
+        const state = JSON.parse(rawState);
+
+        if (tokenFilterInput) tokenFilterInput.value = state.token || "";
+
+        checkboxes.forEach(cb => {
+            cb.checked = state.chains?.includes(cb.value) || false;
+        });
+
+        aprFilterCheckbox.checked = !!state.hideZeroApr;
+
+        filterStatus.forEach(cb => {
+            cb.checked = state.status?.includes(cb.value) || false;
+        });
+    }
+
+    const tableRows = Array.from(document.querySelectorAll("#nftTable tbody tr")).map(row => ({
+        el: row,
+        text: row.innerText.toUpperCase(),
+        chain: row.querySelector("td[data-label='Chain']").textContent.trim().toLowerCase(),
+        apr: parseFloat(row.querySelector("td[data-label='Farm APR 1h']")?.textContent.replace('%','').trim()) || 0,
+        status: row.querySelector("td[data-label='Status']").textContent.trim().toLowerCase()
+    }));
+
+    // --- APPLY FILTER ---
+    function applyFilter() {
+        // const tableRows = document.querySelectorAll("#nftTable tbody tr");
+        const tokenFilter = tokenFilterInput ? tokenFilterInput.value.trim().toUpperCase() : "";
+        const selectedChains = Array.from(checkboxes)
+            .filter(checkbox => checkbox.checked)
+            .map(checkbox => checkbox.value.toLowerCase());
+
+        const showOnlyZeroAPR = aprFilterCheckbox.checked;
+
+        const selectedStatus = Array.from(filterStatus)
+            .filter(status => status.checked)
+            .map(status => status.value.toLowerCase());
+
+        // tableRows.forEach(row => {
+        //     const rowText = row.innerText.toUpperCase();
+
+        //     const chain = row.querySelector("td[data-label='Chain']").textContent.trim().toLowerCase();
+        //     const apr1hCell = row.querySelector("td[data-label='Farm APR 1h']");
+        //     const apr1hText = apr1hCell ? apr1hCell.textContent.replace('%', '').trim() : "0";
+        //     const apr1h = parseFloat(apr1hText) || 0;
+        //     const status = row.querySelector("td[data-label='Status']").textContent.trim().toLowerCase();
+
+        //     const matchToken = !tokenFilter || rowText.includes(tokenFilter);
+        //     const matchChain = selectedChains.length === 0 || selectedChains.includes(chain);
+        //     const matchAPR = !showOnlyZeroAPR || apr1h <= 0.0001;
+        //     const matchStatus = selectedStatus.length === 0 || selectedStatus.includes(status);
+
+        //     row.style.display = (matchToken && matchChain && matchAPR && matchStatus) ? "" : "none";
+        // });
+        tableRows.forEach(row => {
+            const matchToken = !tokenFilter || row.text.includes(tokenFilter);
+            const matchChain = selectedChains.length === 0 || selectedChains.includes(row.chain);
+            const matchAPR = !showOnlyZeroAPR || row.apr <= 0.0001;
+            const matchStatus = selectedStatus.length === 0 || selectedStatus.includes(row.status);
+
+            row.el.style.display = (matchToken && matchChain && matchAPR && matchStatus) ? "" : "none";
+        });
+    }
+
+    // --- RELOAD DATA FROM SERVER ---
+    function reloadDataFromServer(token) {
+        // lấy filter state hiện tại (không chỉ save vào localStorage)
+        const currentState = {
+            token: tokenFilterInput ? tokenFilterInput.value.trim() : "",
+            chains: Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value),
+            hideZeroApr: aprFilterCheckbox.checked,
+            status: Array.from(filterStatus).filter(cb => cb.checked).map(cb => cb.value),
+        };
+        localStorage.setItem("nftFilterState", JSON.stringify(currentState));
+
+        fetch(`/?token=${encodeURIComponent(token)}`)
+            .then(resp => resp.text())
+            .then(html => {
+                // gắn dữ liệu mới từ server
+                document.querySelector("#nftTable tbody").innerHTML = html;
+
+                // KHÔNG gọi loadFilterState() nữa
+                // Mà restore lại state vừa lưu
+                if (tokenFilterInput) tokenFilterInput.value = currentState.token;
+
+                checkboxes.forEach(cb => {
+                    cb.checked = currentState.chains.includes(cb.value);
+                });
+
+                aprFilterCheckbox.checked = currentState.hideZeroApr;
+
+                filterStatus.forEach(cb => {
+                    cb.checked = currentState.status.includes(cb.value);
+                });
+
+                applyFilter(); // áp lại filter UI
+            })
+            .catch(err => {
+                console.error("Error loading data:", err);
+            });
+    }
+
+    function debounce(fn, delay=200) {
+        let timer;
+        return (...args) => {
+            clearTimeout(timer);
+            timer = setTimeout(() => fn(...args), delay);
+        };
+    }
+
+    // --- EVENTS ---
+    if (tokenFilterInput) tokenFilterInput.addEventListener("keyup", debounce(() => {
+        applyFilter();
+        saveFilterState();
+    }, 200));
+    checkboxes.forEach(cb => cb.addEventListener("change", () => {
+        applyFilter();
+        saveFilterState();
+    }));
+    aprFilterCheckbox.addEventListener("change", () => {
+        applyFilter();
+        saveFilterState();
+    });
+    filterStatus.forEach(cb => cb.addEventListener("change", () => {
+        applyFilter();
+        saveFilterState();
+    }));
+
+    // Ví dụ: gắn reloadDataFromServer vào một nút "Filter from DB"
+    const dbFilterBtn = document.getElementById("dbFilterBtn");
+    if (dbFilterBtn) {
+        dbFilterBtn.addEventListener("click", () => {
+            const token = tokenFilterInput.value.trim();
+            reloadDataFromServer(token);
+        });
+    }
+
+    // --- INIT ---
+    loadFilterState();
+    applyFilter();
+});
+
+
+    // submit form with action
+    // function submitFormWithAction(actionValue) {
+    //     document.getElementById('form-action').value = actionValue;
+    //     document.getElementById('nft-form').submit();
+    // }
+    </script>
+</body>
+</html>

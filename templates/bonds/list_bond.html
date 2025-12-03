@@ -1,0 +1,68 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="container">
+    <h1 class="mb-4 title">📝 Bond Information Management</h1>
+    <div class="actions-group" style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="btn-group">
+            <a href="{{ url_for('add_bond') }}" class="btn btn-add">Add new bond</a>
+            <a href="{{ url_for('update_bonds_from_api') }}" class="btn btn-add">Sync Bonds from ApeBond API</a>
+        </div>
+        <div class="input-field filter">
+            <label for="tokenFilter">🔍 Filter by Token:</label>
+            <input type="text" placeholder="e.g. CAKE, USDT, WETH" onkeyup="filterTable(this, 'bondTable')" style="padding: 6px; width: 300px;">
+        </div>
+    </div>
+    <table id="bondTable" class="table table-bordered data-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Chain</th>
+                <th>Contract Address</th>
+                <th>Token Symbol</th>
+                <th>Status</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for bond in bonds %}
+            <tr>
+                <td data-label="ID">{{ loop.index }}</td>
+                <td data-label="Chain">{{ bond.chain }}</td>
+                <td data-label="Contract Address" style="overflow-wrap: break-word;">{{ bond.contract_address }}</td>
+                <td data-label="Token Symbol">{{ bond.token_symbol }}</td>
+                <td data-label="Status">{{ bond.status }}</td>
+                <td data-label="Action" class="actions" style="display: flex; gap: 10px;    ">
+                    <form method="POST" class="form-update-status"
+                        action="{{ url_for('update_status', contract_address=bond.contract_address) }}">
+                        <select name="status" onchange="this.form.submit()" class="form-control">
+                            <option value="active" {% if bond.status=='active' %}selected{% endif %}>Active</option>
+                            <option value="sold" {% if bond.status=='sold' %}selected{% endif %}>Sold</option>
+                        </select>
+                    </form>
+
+                    <a href="{{ url_for('update_bond', contract_address=bond.contract_address) }}"
+                        class="btn btn-edit">Edit</a>
+
+                    <form method="POST" action="{{ url_for('delete_bond', contract_address=bond.contract_address) }}"
+                        onsubmit="return confirm('Are you sure you want to delete this bond?');">
+                        <button type="submit" class="btn btn-delete">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+function filterTable(input, tableId) {
+    const filter = input.value.toLowerCase();
+    const rows = document.querySelectorAll(`#bondTable tbody tr`);
+    rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(filter) ? "" : "none";
+    });
+}
+</script>
+{% endblock %}

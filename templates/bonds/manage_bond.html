@@ -1,0 +1,62 @@
+{% extends 'layout.html' %}
+
+{% block content %}
+<div class="container">
+    <h1 class="title">
+        {% if bond_data %}
+        ✏️ Edit Bond: {{ bond_data.token_symbol }}
+        {% else %}
+        ➕ Add New Bond
+        {% endif %}
+    </h1>
+
+    <div class="form">
+        <form method="POST" class="form-add">
+            <div class="input-field">
+                <label>Chain: </label>
+                <select name="chain" class="form-control" required>
+                    <option value="BNB" {% if bond_data and bond_data.chain=='BNB' %}selected{% endif %}>BSC</option>
+                    <option value="ETH" {% if bond_data and bond_data.chain=='ETH' %}selected{% endif %}>Ethereum
+                    </option>
+                    <option value="BAS" {% if bond_data and bond_data.chain=='BAS' %}selected{% endif %}>Base</option>
+                    <option value="POL" {% if bond_data and bond_data.chain=='POL' %}selected{% endif %}>Polygon
+                    </option>
+                    <option value="ARB" {% if bond_data and bond_data.chain=='ARB' %}selected{% endif %}>Arbitrum
+                    </option>
+                    <option value="SON" {% if bond_data and bond_data.chain=='SON' %}selected{% endif %}>Sonic</option>
+                    <option value="LIN" {% if bond_data and bond_data.chain=='LIN' %}selected{% endif %}>Linea</option>
+                    <option value="BER" {% if bond_data and bond_data.chain=='BER' %}selected{% endif %}>Bera</option>
+                    <option value="SOL" {% if bond_data and bond_data.chain=='SOL' %}selected{% endif %}>Solana</option>
+                </select>
+            </div>
+
+            <div class="input-field">
+                <label>Contract Address: </label>
+                <input type="text" name="contract_address" class="form-control"
+                    value="{{ bond_data.contract_address if bond_data else '' }}" placeholder="0x" required>
+            </div>
+
+            <div class="input-field">
+                <label>Token Symbol: </label>
+                <input type="text" name="token_symbol" class="form-control"
+                    value="{{ bond_data.token_symbol if bond_data else '' }}" placeholder="e.g. CAKE, USDT, WETH"
+                    required>
+            </div>
+
+            <div class="input-field">
+                <label>Status: </label>
+                <select name="status" class="form-control">
+                    <option value="active" {% if bond_data and bond_data.status=='active' %}selected{% endif %}>Active
+                    </option>
+                    <option value="sold" {% if bond_data and bond_data.status=='sold' %}selected{% endif %}>Sold
+                    </option>
+                </select>
+            </div>
+
+            <button type="submit" class="btn btn-add">
+                {% if bond_data %}Edit Bond{% else %}Add Bond{% endif %}
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

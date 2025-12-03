@@ -1,0 +1,830 @@
+:root {
+    --bg-color: #f5f5f5;
+    --bg-container: #fff;
+    --text-color: #000000;
+    --text-checkbox: #ffffff;
+    --text-title: #2c3e50;
+    --bg-menu: #2c3e50;
+    --menu-hover: #1f2b36;
+    --bg-form: #f5f5f5;
+    --text-label: #2c3e50;
+    --bg-thead: #2c3e50;
+    --text-thead: #fff;
+    --border-color: #ddd;
+    --bg-tchild: #f1f1f1;
+    --tbody-hover: #e8f0fe;
+    --bg-pagination: #fff;
+    --text-pagination: #fff;
+}
+
+body.dark-mode {
+    --bg-color: #0f172a;
+    --text-color: #f1f5f9;
+    --text-checkbox: #000000;
+    --bg-container: #1e293b;
+    --text-title: #fbbf24;
+    --bg-menu: #fbbf24;
+    --menu-hover: #d8a31b;
+    --bg-form: #334155;
+    --text-label: #e0f2fe;
+    --bg-thead: #2c3e50;
+    --text-thead: #facc15;
+    --border-color: #435063;
+    --bg-tchild: #273449;
+    --tbody-hover: #334155;
+    --bg-pagination: #334155;
+    --text-pagination: #fff;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    padding: 1rem;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+
+a {
+    color: #38bdf8;
+    text-decoration: none;
+}
+a:hover {
+    text-decoration: underline;
+}
+
+.top-content{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.container {
+    background: var(--bg-container);
+    padding: 1rem;
+    border-radius: 12px;
+    max-width: 100%;
+    margin: auto;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    overflow-x: auto;
+    margin-bottom: 30px;
+}
+
+.menu-bar{
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.nav-menu{
+    display: flex;
+    gap: 1rem;
+}
+
+.menu {
+    text-decoration: none;
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--bg-color);
+    padding: 8px 10px;
+    background-color: var(--bg-menu);
+    border-radius: 10px;
+    display: inline-block;
+}
+
+.menu:hover {
+    background-color: var(--menu-hover);
+    text-decoration: none;
+}
+
+h1, h2 {
+    text-align: center;
+    color: var(--text-title);
+}
+
+h1 {
+    margin-top: 60px;
+    margin-bottom: 60px;
+}
+
+h2 {
+    margin-bottom: 30px;
+}
+
+.btn{
+    padding: 5px 10px;
+    font-size: 1rem;
+    background-color: var(--bg-menu);
+    border: none;
+    color: var(--bg-color);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background-color 0.3s ease;
+}
+.btn-add{
+    background-color: rgb(49, 49, 209);
+}
+.btn-edit{
+    background-color: primary;
+}
+
+strong {
+    word-break: break-word;
+}
+
+.form-nft {
+    text-align: center;
+    margin-bottom: 60px;
+    background: var(--bg-form);
+    padding: 20px;
+    border-radius: 12px;
+}
+
+label {
+    font-weight: bold;
+    color: var(--text-label);
+}
+
+.input-group {
+    display: flex;
+    gap: 30px;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.button-group {
+    display: flex;
+    justify-content: center;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-top: 60px;
+}
+
+select, input[type="text"], input[type="date"], input[type="password"] {
+    padding: 10px;
+    font-size: 1rem;
+    border: 1px solid #64748b;
+    border-radius: 6px;
+    background-color: var(--bg-container);
+    color: var(--text-color);
+}
+
+select {
+    width: 120px;
+    max-width: 90%;
+}
+
+input[type="text"], input[type="password"] {
+    width: 400px;
+    max-width: 90%;
+}
+
+input[type="date"] {
+    width: 150px;
+    max-width: 90%;
+}
+
+.filter-by-token{
+    display: flex;
+    justify-content: right;
+    align-items: center;
+}
+
+#tokenPoolFilter {
+    width: 300px;;
+}
+
+button {
+    padding: 10px 20px;
+    font-size: 1rem;
+    background-color: var(--bg-menu);
+    border: none;
+    color: var(--bg-color);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background-color 0.3s ease;
+}
+
+button:hover {
+    background-color: var(--menu-hover);
+}
+
+/* Message */
+.message {
+    padding: 10px;
+    background-color: var(--bg-menu);
+    color: var(--bg-color);
+    border-radius: 6px;
+    text-align: center;
+    display: block;
+    word-break: break-all;
+    white-space: normal;
+    margin-bottom: 30px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.95rem;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.08);
+    background-color: #1e293b;
+}
+
+thead tr {
+    background-color: var(--bg-thead);
+    color: var(--text-thead);
+    text-align: left;
+}
+
+th, td {
+    padding: 15px 9px;
+    border: 1px solid var(--border-color);
+}
+
+td a {
+    text-decoration: none;
+    color: #38bdf8;
+}
+
+td a:hover {
+    text-decoration: underline;
+}
+
+tbody tr,
+tfoot tr {
+    background-color: var(--bg-container);
+    transition: background-color 0.2s ease-in-out;
+}
+
+tbody tr:nth-child(even),
+tbody tr:nth-child(even) .child-table tbody tr
+{
+    background-color: var(--bg-tchild);
+}
+
+
+tbody tr:hover,
+tbody tr:hover .child-table tbody tr{
+    background-color: var(--tbody-hover);
+}
+
+h2 {
+    font-size: 1.4rem;
+    margin-top: 30px;
+    margin-bottom: 30px;
+}
+
+h2 span {
+    color: var(--text-title);
+    font-weight: 600;
+    word-break: break-word;
+}
+
+.pagination {
+    margin-bottom: 40px;
+    text-align: center;
+    padding: 10px;
+}
+
+.pagination a,
+.pagination strong {
+    display: inline-block;
+    margin: 0 5px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: bold;
+    font-size: 14px;
+    transition: background-color 0.3s ease;
+}
+
+.pagination a {
+    background-color: var(--bg-pagination);
+    color: var(--text-color);
+    border: 1px solid var(--bg-pagination);
+}
+
+.pagination a:hover {
+    background-color: var(--bg-menu);
+    color: #fff;
+}
+
+.pagination strong {
+    background-color: var(--bg-menu);
+    color: var(--text-pagination);
+    border: 1px solid var(--bg-menu);
+}
+
+td strong{
+    word-break: normal;
+}
+
+/* ✅ Dark mode */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+  }
+
+  .toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background-color: #ccc;
+    transition: 0.4s;
+    border-radius: 34px;
+  }
+
+  .slider::before {
+    position: absolute;
+    content: "";
+    height: 26px;
+    width: 26px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: 0.4s;
+    border-radius: 50%;
+  }
+
+  input:checked + .slider {
+    background-color: var(--bg-thead);
+  }
+
+  input:checked + .slider::before {
+    transform: translateX(26px);
+  }
+
+  .theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+.mode-icons {
+    font-size: 20px;
+    margin: 0 8px;
+    vertical-align: middle;
+}
+
+th {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+}
+
+.sort-icon {
+    font-size: 1em;
+    margin-left: 4px;
+    color: #888;
+}
+
+.sort-icon.active {
+    color: var(--text-thead);
+    font-weight: bold;
+}
+
+.sort-asc::after {
+    content: "↑";
+    font-size: 1em;
+    margin-left: 4px;
+}
+
+.sort-desc::after {
+    content: "↓";
+    font-size: 1em;
+    margin-left: 4px;
+}
+
+/* ADD BOND PAGE */
+.form-add {
+        max-width: 600px;
+        margin: 20px auto;
+        padding: 30px;
+        border-radius: 8px;
+        background-color: var(--bg-form);
+    }
+
+.form-add .input-field {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 20px;
+}
+
+.form-add .input-field label {
+    margin-bottom: 5px;
+    font-weight: 600;
+    text-align: left;
+    font-weight: 700;
+}
+
+.form-add .input-field .form-control {
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.btn-add {
+    margin-top: 15px;
+    margin-bottom: 10px;
+    background-color: #28a745;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 4px;
+    text-decoration: none;
+    margin-right: 30px;
+}
+.btn-add:hover {
+    background-color: #218838;
+}
+
+.btn-delete{
+    background-color: #dc3545;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 4px;
+    text-decoration: none;
+}
+.btn-delete:hover {
+    background-color: #c82333;
+}
+
+.btn-edit{
+    background-color: #007bff;
+    color: white;
+    padding: 10px 15px;
+    border-radius: 4px;
+    text-decoration: none;
+}
+.btn-edit:hover {
+    background-color: #0069d9;
+}
+
+/* ⚠️ KHÔNG bỏ color khỏi highlight */
+.current-highlight {
+    background-color: #d1f2eb !important;
+    color: #145a32;
+    font-weight: bold;
+}
+
+.apr-1h-highlight {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    font-weight: bold;
+}
+
+.fee-apr-1h-highlight {
+    background-color: #fff8e1;
+    color: #f57c00;
+    font-weight: bold;
+}
+
+.cake-reward-1h-highlight {
+    color: #dfd43d;
+    font-weight: bold;
+}
+
+.cake-per-day-highlight {
+    background-color: #e8f5e9;
+    color: #e19459;
+    font-weight: bold;
+}
+
+.total-active-staked-liquidity-highlight {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    font-weight: bold;
+}
+
+/* Error ghi đè riêng màu chữ (nếu có) */
+.error-text {
+    color: #b00020 !important;  /* ⚠️ dùng !important để override màu */
+    font-weight: bold;
+}
+
+.input-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-direction: row;
+}
+
+.checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.custom-checkbox {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.custom-checkbox input[type="checkbox"] {
+    opacity: 0;
+    position: absolute;
+    cursor: pointer;
+}
+
+.custom-checkbox .checkmark {
+    padding: 6px 12px;
+    background-color: var(--bg-form);
+    color: var(--text-color);
+    border: 2px solid #444;
+    border-radius: 20px;
+    transition: all 0.2s ease-in-out;
+    user-select: none;
+    font-size: 13px;
+    font-family: 'Segoe UI', sans-serif;
+}
+
+.custom-checkbox input[type="checkbox"]:checked + .checkmark {
+    background-color: var(--bg-menu);
+    color: var(--bg-color);
+    font-weight: 700;
+    border-color: var(--bg-menu);
+    box-shadow: 0 0 8px rgba(48, 49, 49, 0.6);
+}
+
+.custom-checkbox .checkmark:hover {
+    background-color: var(--bg-menu);
+    color: var(--bg-color);
+    font-weight: 700;
+}
+
+.input-field label {
+    margin-right: 15px;
+    font-weight: normal;
+}
+
+.checkbox-group label {
+    margin-right: 0;
+    font-weight: normal;
+}
+
+/* Pool CSS */
+.total-cake-per-day-each-chain {
+    margin-bottom: 30px;
+}
+
+.total-cake-per-day-each-chain .chain-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.total-cake-per-day-each-chain .title {
+    text-align: left;
+}
+
+.total-cake-per-day-each-chain .chain-item {
+    padding: 6px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background-color: var(--bg-container);
+    font-size: 16px;
+}
+
+/* Staked tracked toggle */
+.stake-track-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 48px;
+  height: 24px;
+  background-color: #ccc;
+  border-radius: 999px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.stake-track-toggle::before {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  top: 2px;
+  left: 2px;
+  background: white;
+  transition: transform 0.3s;
+}
+
+.stake-track-toggle:checked {
+  background-color: var(--bg-menu); /* màu xanh bật */
+}
+
+.stake-track-toggle:checked::before {
+  transform: translateX(24px);
+}
+
+/* Áp dụng cho cột tick-data */
+.tick-data {
+    display: flex;
+    align-items: center;       /* canh giữa theo chiều dọc */
+    justify-content: space-between; /* tách 2 khối ra hai bên */
+    gap: 4px;                  /* khoảng cách giữa hai khối */
+    /* padding: 4px 8px; */
+    white-space: nowrap;
+}
+
+/* Khối chứa thông tin giá */
+.tick-data .price-info {
+    flex-grow: 1;              /* chiếm toàn bộ phần còn lại */
+    font-size: 0.9rem;
+}
+
+/* Nút đổi chiều */
+.toggle-price-dir {
+    border: none;
+    background: transparent;
+    outline: none;
+    cursor: pointer;
+    font-size: 1.1rem;
+    /* padding: 4px 6px; */
+    transition: transform 0.2s ease;
+    font-size: 20px;
+}
+
+/* Hiệu ứng hover nhẹ */
+/* .toggle-price-dir:hover {
+    transform: rotate(90deg);
+} */
+
+/* Khi focus (bấm giữ) cũng không hiện viền */
+.toggle-price-dir:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+.highlight {
+    background-color: rgba(255, 0, 0, 0.2);
+    font-weight: 600;
+}
+.table-warning {
+    background-color: #e49778 !important;
+}
+.table-danger {
+    background-color: #eba5ab !important;
+}
+
+/* Popup Binance Key */
+.popup {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: flex; justify-content: center; align-items: center;
+  background-color: rgba(0,0,0,0.5);
+  z-index: 999;
+}
+.popup.hidden { 
+    display: none; 
+}
+
+.popup-content {
+  background: var(--bg-container);
+  border-radius: 10px; 
+  padding: 20px 30px;
+  width: 400px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+
+.popup-buttons {
+  margin-top: 15px;
+  display: flex; 
+  justify-content: flex-end; 
+  gap: 10px;
+}
+
+/* ✅ Responsive */
+@media screen and (max-width: 820px) {
+    .actions-group {
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+    }
+}
+
+@media screen and (max-width: 768px) {
+    body {
+        padding: 0.5rem;
+    }
+
+    h1 {
+        margin-top: 40px;
+    }
+
+    .container {
+        padding: 1rem;
+    }
+
+    .menu{
+        font-size: 0.95rem;
+        padding: 6px 8px;
+    }
+
+    .input-group {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .filter-options {
+        flex-direction: column;
+        align-items: center;
+        gap: 30px;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    button {
+        width: 100%;
+        font-size: 0.95rem;
+    }
+
+    table, thead, tbody, tfoot, th, td, tr {
+        display: block;
+        /* width: 100%; */
+    }
+
+    thead {
+        display: none;
+    }
+
+    tr {
+        margin-bottom: 1rem;
+        background-color: #1e293b;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        padding: 10px;
+        border-radius: 8px;
+    }
+
+    td {
+        padding: 10px;
+        border: none;
+        position: relative;
+    }
+
+    td::before {
+        content: attr(data-label);
+        font-weight: bold;
+        display: block;
+        /* color: #f1f5f9; */
+        margin-bottom: 5px;
+    }
+
+    .actions-group{
+        display: flex;
+        flex-direction: column;
+        text-align: center;
+    }
+    .btn-group{
+        display: flex;
+        flex-direction: column;
+        text-align: center;
+        width: 100%;
+    }
+    .btn-add{
+        margin-right: 0;
+        font-size: 0.95rem;
+    }
+    .filter {
+        margin-top: 15px;
+    }
+
+    .actions{
+        flex-direction: column;
+    }
+    .actions .btn-delete, .btn-edit{
+        text-align: center;
+    }
+
+    .search-field{
+        width: 100%;
+    }
+
+    #tokenPoolFilter {
+        width: 100%;
+        margin-bottom: 10px;
+    }
+
+    .filter-by-token{
+        justify-content: center;
+    }
+}

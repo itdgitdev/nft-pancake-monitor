@@ -1,0 +1,350 @@
+/*transaction history*/
+.filter-form {
+  display: flex;
+  position: relative;
+  justify-content: center;
+  background: var(--bg-form);
+  padding: 10px 0;
+  border-radius: 6px;
+}
+
+.filter-form .filter-card {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  background: var(--bg-form);
+  border-radius: 10px;
+}
+
+.filter-form .field {
+  position: relative;
+  width: 100%;
+  /*padding: 0.20em;*/
+  float: left;
+  box-sizing: border-box;
+  /*margin-bottom: px;*/
+}
+
+.filter-form .field .field-input-wrapper {
+  position: relative;
+  margin-right: 5px;
+}
+.filter-form .field .field-input-wrapper input,
+    .filter-form .field .field-input-wrapper button,
+    .filter-form .field .field-input-wrapper select {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.filter-form .field .field-input-wrapper label{
+  display: block;
+}
+
+.field-flex{
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+}
+
+.flex-col{
+  flex: 1;
+}
+
+.filter-form input:invalid,
+.filter-form select:invalid {
+  border: 2px solid red;
+}
+
+.error-message {
+  color: red;
+  font-size: 12px;
+  display: block;
+  min-height: 14px;
+}
+
+.btn-search {
+  width: 100%;
+  font-size: 1rem;
+  background-color: var(--bg-menu);
+  color: var(--bg-color);
+  border: none;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+table.child-table-header {
+  position: relative;
+  margin: 0;
+  box-shadow: none;
+}
+
+table.child-table{
+  border-radius: 8px;
+}
+
+table.child-table-header thead tr th,
+table.child-table tbody tr td {
+  border-top: none;
+  border-bottom: none;
+}
+
+table.child-table-header thead tr th:first-child,
+table.child-table tbody tr td:first-child {
+  border-left: none;
+}
+
+table.child-table-header thead tr th:last-child,
+table.child-table tbody tr td:last-child {
+  border-right: none;
+}
+
+table.child-table-header tbody {
+  position: relative;
+  top: -20px;
+  left: 0;
+  width: 100%;
+  visibility: hidden;
+}
+
+table.child-table thead tr {
+  background-color: #666666;
+}
+
+table.child-table {
+  margin: 0;
+  box-shadow: none;
+  table-layout: fixed;
+}
+table.child-table-header tbody tr td,
+table.child-table thead tr th{
+  visibility: hidden;
+  border: none;
+}
+
+.cell-amount{
+  width: 120px;
+}
+
+.cell-name{
+  width: 100px;
+}
+
+.cell-nft{
+  width: 80px;
+}
+
+.cell-contract,
+.cell-wallet{
+  width: 120px;
+}
+
+.no-wrap{
+  white-space: nowrap;
+}
+
+.mb-50{
+  margin-bottom: 0;
+  padding-bottom: 50px;
+}
+
+/*LOADER SPINER*/
+.loader {
+  display: block;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  position: relative;
+  animation: rotate 1s linear infinite
+}
+
+.loader::before {
+  content: "";
+  box-sizing: border-box;
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 5px solid var(--text-color);
+  animation: prixClipFix 2s linear infinite;
+}
+
+@keyframes rotate {
+  100% {
+    transform: rotate(360deg)
+  }
+}
+
+@keyframes prixClipFix {
+  0% {
+    clip-path: polygon(50% 50%, 0 0, 0 0, 0 0, 0 0, 0 0)
+  }
+  25% {
+    clip-path: polygon(50% 50%, 0 0, 100% 0, 100% 0, 100% 0, 100% 0)
+  }
+  50% {
+    clip-path: polygon(50% 50%, 0 0, 100% 0, 100% 100%, 100% 100%, 100% 100%)
+  }
+  75% {
+    clip-path: polygon(50% 50%, 0 0, 100% 0, 100% 100%, 0 100%, 0 100%)
+  }
+  100% {
+    clip-path: polygon(50% 50%, 0 0, 100% 0, 100% 100%, 0 100%, 0 0)
+  }
+}
+
+/*STYLE DROPDOWN*/
+.dropdown {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.dropdown-btn {
+  width: 100%;
+  padding: 10px 20px;
+  /*background: #4a90e2;*/
+  background: var(--bg-container);
+  color: var(--text-color);
+  /*border: none;*/
+  cursor: pointer;
+  border-radius: 6px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 1px solid #64748b;
+}
+
+.dropdown-btn:hover{
+  background-color: var(--bg-container);
+}
+
+.dropdown-menu {
+  position: absolute;
+  width: 100%;
+  top: 100%;
+  left: 0;
+  background: var(--bg-container);
+  border: 1px solid #64748b;
+  border-radius: 6px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  display: none;
+  min-width: 160px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+.dropdown-menu input[type="checkbox"]{
+  width: fit-content !important;
+  margin: 0 !important;
+  margin-right: 5px !important;
+}
+
+.dropdown-menu.show {
+  display: block;
+}
+
+.dropdown-menu label {
+  display: flex !important;
+  align-items: center;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.dropdown-menu label:first-child{
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+}
+
+.dropdown-menu label:last-child{
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+}
+
+.dropdown-menu label:hover {
+  background: #38bdf8;
+}
+
+/*RESPONSIVE TRANSACTION HISTORY*/
+@media (min-width: 750px) {
+  .field-70 {
+    width: 66.666667% !important;
+  }
+.field-50 {
+    width: 50% !important;
+  padding: 0 !important;
+  }
+  .field-30 {
+    width: 33.333333% !important;
+  }
+  .mb-50{
+  margin-bottom: 0;
+  padding-bottom: 0;
+  }
+}
+
+@media screen and (max-width: 768px) {
+   /*TRANSACTION HISTORY*/
+    input.field-input,
+    .select-chain,
+    .field-input-wrapper .dropdown
+    {
+        width: 100%;
+        font-size: 0.95rem;
+        margin-top: 10px;
+    }
+
+    td::before {
+        content: attr(data-label);
+        font-weight: bold;
+        display: block;
+        /* color: #f1f5f9; */
+        margin-bottom: 5px;
+    }
+
+    td.no-data{
+      display: none;
+    }
+
+    table.child-table {
+    margin: 0;
+    box-shadow: none;
+    }
+
+    table.child-table tbody tr {
+      border: none;
+      box-shadow: none;
+      border-radius: 0;
+    }
+
+    .filter-form .field .field-input-wrapper input,
+    .filter-form .field .field-input-wrapper button,
+    .filter-form .field .field-input-wrapper select{
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .field-flex{
+      flex-direction: column;
+    }
+
+    .field-input-wrapper{
+      margin-left: 5px;
+    }
+
+    table tfoot tr{
+      margin-bottom: 0;
+      border-radius: 0;
+      box-shadow: none;
+    }
+
+    table tfoot td{
+      padding: 0!important;
+    }
+
+    table tfoot td[data-label="Token"] {
+      display: none;
+    }
+
+}

@@ -1,0 +1,487 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="container">
+    <h1 class="mb-4 title">📝 List Pool Farm from Pancakeswap</h1>
+
+    <!-- Total Cake Per Day Each Chain -->
+    <div class="total-cake-per-day-each-chain">
+        <h2 class="mt-5 mb-3 title">🍰 Total Cake Per Day Each Chain</h2>
+        <div class="chain-list">
+            {% if total_cake_per_day_chain %}
+                {% for item in total_cake_per_day_chain %}
+                    <div class="chain-item">
+                        <strong class="chain-name">{{ item.chain }}: </strong>
+                        <span class="chain-value">{{ "{:,.3f}".format(item.total_cake_per_day) }}</span>
+                    </div>
+                {% endfor %}
+            {% endif %}
+            <div class="chain-item">
+                <strong class="chain-name">SOL: </strong> 
+                <span class="chain-value">{{ "{:,.3f}".format(total_cake_per_day_sol) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table View Selector -->
+    <div class="filter" style="margin-top:30px; margin-bottom: 30px">
+    <label for="tableViewSelector">📊 Show table:</label>
+    <select id="tableViewSelector" style="padding:6px; width:200px;">
+        <option value="all">Tất cả</option>
+        <option value="evm">EVM Pools</option>
+        <option value="sol">Solana Pools</option>
+    </select>
+    </div>
+
+    <!-- Filter by Token -->
+    <div class="actions-group" style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="input-field filter">
+            <label for="tokenFilterPool">🔍 Filter:</label>
+            <input type="text" id="tokenFilterPool" placeholder="e.g. CAKE, USDT, WETH" style="padding: 6px; width: 300px;">
+        </div>
+    </div>
+
+    <!-- Filter by Chain -->
+    <!-- <div class="actions-group filter" style="margin-top: 30px;">
+        <label for="chainFilter">🌊 Filter by Chain:</label>
+        <select id="chainFilter" class="form-select" style="width:150px;">
+            <option value="">All Chains</option>
+            <option value="BNB">BSC</option>
+            <option value="ETH">ETH</option>
+            <option value="ARB">ARB</option>
+            <option value="LIN">LIN</option>
+            <option value="POL">POL</option>
+            <option value="BAS">BAS</option>
+        </select>
+    </div> -->
+
+    <div id="evm-table-wrapper">
+        <!-- EVM Pools Table -->
+        {% if pools %}
+        <h2 class="mt-5 mb-3 title">🌊 List Pool Farm on EVM</h2>
+        <table id="poolTable" class="table table-bordered data-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Chain</th>
+                    <th>Pool Address</th>
+                    <th>Token0 Address</th>
+                    <th>Token1 Address</th>
+                    <th>Token0 Symbol</th>
+                    <th>Token1 Symbol</th>
+                    <th>Fee(%)</th>
+                    <th>Alloc Point</th>
+                    <th>Pid</th>
+                    <th onclick="sortTable(10, this)">Cake Per Day <span class="sort-icon">⇅</span></th>
+                    <th>Total Value Locked($)</th>
+                    <th>Cake 1h(%)</th>
+                    <th>Total Current Liquidity($)</th>
+                    <th onclick="sortTable(14, this)">Total Active Staked Liquidity($) <span class="sort-icon">⇅</span></th>
+                    <th>Total Inactive Staked Liquidity($)</th>
+                    <th onclick="sortTable(16, this)">Total (Active + Inactive) Staked Liquidity($) <span class="sort-icon">⇅</span></th>
+                    <th>Farm APR(%)</th>
+                    <th>Track Staked Liquidity?</th>
+                    <th>Time Updated</th>
+                    <th>Pool Chart</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pool in pools %}
+                <tr>
+                    <td data-label="ID">{{ loop.index }}</td>
+                    <td data-label="Chain">{{ pool.chain }}</td>
+                    <td data-label="Pool Address" style="overflow-wrap: break-word;">
+                        <a href="{{explorers[pool.chain]}}{{pool.pool_address}}" target="_blank">
+                            {{ pool.pool_address[:6] }}...{{ pool.pool_address[-4:]}}
+                        </a>
+                    </td>
+                    <td data-label="Token0 Symbol">{{ pool.token0_address }}</td>
+                    <td data-label="Token1 Symbol">{{ pool.token1_address }}</td>
+                    <td data-label="Token0 Symbol">{{ pool.token0_symbol }}</td>
+                    <td data-label="Token1 Symbol">{{ pool.token1_symbol }}</td>
+                    <td data-label="Fee">{{ pool.fee/10000 }}</td>
+                    <td data-label="Alloc Point">{{ pool.alloc_point }}</td>
+                    <td data-label="Pid">{{ pool.pid }}</td>
+                    <td class="cake-per-day-highlight" data-label="Cake Per Day" data-cake-reward="{{ (pool.cake_per_day) }}">
+                        {{ "{:,.1f}".format(pool.cake_per_day) }}
+                    </td>
+                    <td data-label="Total Value Locked" data-liquidity="{{ (pool.total_value_lock) }}">
+                        {{ "{:,.0f}".format(pool.total_value_lock) }}
+                    </td>
+                    <td class="cake-reward-1h-highlight" data-label="Cake 1h(%)">
+                        {{ "{:,.2f}".format(pool.cake_reward_1h) }}
+                    </td>
+                    <td class="current-highlight" data-label="Total Current Liquidity">
+                        {{ "{:,.0f}".format(pool.total_current_liquidity) }}
+                    </td>
+                    <td class="total-active-staked-liquidity-highlight" data-label="Total Staked Liquidity">
+                        {{ "{:,.0f}".format(pool.total_staked_liquidity) }}
+                    </td>
+                    <td data-label="Total Inactive Staked Liquidity">
+                        {{ "{:,.0f}".format(pool.total_inactive_staked_liquidity) }}
+                    </td>
+                    <td data-label="Total (Active + Inactive) Staked Liquidity" data-total-staked-liquidity="{{ (pool.total_inactive_staked_liquidity) }}">
+                        {{ "{:,.0f}".format((pool.total_staked_liquidity + pool.total_inactive_staked_liquidity)) }}
+                    </td>
+                    <td data-label="Farm APR" data-farm-apr="{{ (pool.farm_apr) }}">
+                        {{ "{:,.2f}".format(pool.farm_apr) }}
+                    </td>
+                    <td data-label="Track Staked Liquidity" style="text-align: center;">
+                        <input type="checkbox"
+                                class="stake-track-toggle"
+                                data-chain="{{ pool.chain }}"
+                                data-pool-address="{{ pool.pool_address }}"
+                                {% if pool.is_stake_tracked %}checked{% endif %}>
+                    </td>
+                    <td data-label="Time Updated">
+                        {{ pool.timestamp }}
+                    </td>
+                    <td data-label="Chart">
+                        <button class="btn btn-primary btn-sm" 
+                                onclick="openDexChart('{{ pool.chain }}', '{{ pool.pool_address }}')">
+                            View Chart
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <div id="sol-table-wrapper">
+        <!-- Solana Pools Section -->
+        {% if pools_sol %}
+        <h2 class="mt-5 mb-3 title">🌊 List Pool Farm on Solana</h2>
+        <table class="table table-bordered data-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Chain</th>
+                    <th>Pool Account</th>
+                    <th>Token0 Mint</th>
+                    <th>Token1 Mint</th>
+                    <th>Token0 Decimals</th>
+                    <th>Token1 Decimals</th>
+                    <th>Reward State</th>
+                    <th>Open Time</th>
+                    <th>End Time</th>
+                    <th>Fee(%)</th>
+                    <th>Cake Per Day</th>
+                    <th>Cake 1h(%)</th>
+                    <th>Total Current Liquidity($)</th>
+                    <th>Total Active Staked Liquidity($)</th>
+                    <th>Total Inactive Staked Liquidity($)</th>
+                    <th>Total (Active + Inactive) Staked Liquidity($)</th>
+                    <th>Farm Status</th>
+                    <th>Time Updated</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pool in pools_sol %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ pool.chain }}</td>
+                    <td style="word-break: break-word;">
+                        <a href="{{explorers[pool.chain]}}{{pool.pool_account}}" target="_blank">
+                            {{ pool.pool_account[:6] }}...{{pool.pool_account[-4:]}}
+                        </a>
+                    </td>
+                    <td style="word-break: break-word;">{{ pool.token0_mint }}</td>
+                    <td style="word-break: break-word;">{{ pool.token1_mint }}</td>
+                    <td>{{ pool.token0_symbol }}</td>
+                    <td>{{ pool.token1_symbol }}</td>
+                    <td>{{ pool.reward_state }}</td>
+                    <td>{{ pool.open_time }}</td>
+                    <td>{{ pool.end_time }}</td>
+                    <td>{{ pool.fee/10000 }}</td>
+                    <td class="cake-per-day-highlight">
+                        {{ "{:,.1f}".format(pool.weekly_rewards/7) }}
+                    </td>
+                    <td class="cake-reward-1h-highlight">{{ "{:,.2f}".format(pool.cake_reward_1h) }}</td>
+                    <td class="current-highlight">{{ "{:,.0f}".format(pool.total_current_liquidity) }}</td>
+                    <td class="total-active-staked-liquidity-highlight">{{ "{:,.0f}".format(pool.total_valid_liquidity) }}</td>
+                    <td>{{ "{:,.0f}".format(pool.total_inactive_staked_liquidity) }}</td>
+                    <td>{{ "{:,.0f}".format(pool.total_valid_liquidity + pool.total_inactive_staked_liquidity ) }}</td>
+                    {% if pool.reward_state == 2 %}
+                    <td style="color: green;">Active</td>
+                    {% else %}
+                    <td style="color: red;">Inactive</td>
+                    {% endif %}
+                    <td>{{ pool.timestamp }}</td>
+                    <td data-label="Action">
+                        <a href="{{ url_for('mint_position_data', chain=pool.chain, pool_address=pool.pool_account) }}" target="_blank" class="btn btn-primary">Mint</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Dex Chart Modal -->
+ <!-- Iframe pools info modal -->
+    <div id="dexModal" class="modal" style="display:none; position:fixed; top:0; left:0; 
+    background:rgba(0,0,0,0.6); width:100%; height:100%; z-index:9999;">
+        <div style="width:90%; height:90%; margin:3% auto; background:#334155; padding:10px; border-radius:10px;">
+            <span onclick="closeDexModal()" 
+                style="float:right; cursor:pointer; font-size:30px; font-weight: bold;">✖</span>
+
+            <iframe id="dexIframe" width="100%" height="95%" 
+                    frameborder="0"></iframe>
+        </div>
+    </div>
+
+<script>
+  document.querySelectorAll('.stake-track-toggle').forEach(cb => {
+    cb.addEventListener('change', async (e) => {
+        const chain = e.target.dataset.chain;
+        const poolAddress = e.target.dataset.poolAddress;
+        const newState = e.target.checked;
+
+        // 🔹 Hiển thị popup xác nhận
+        const confirmMsg = newState
+        ? `Are you sure want to turn on stake tracking for pool ${poolAddress}?`
+        : `Are you sure want to turn off stake tracking for pool ${poolAddress}?`;  
+
+        if (!confirm(confirmMsg)) {
+        // ❌ Người dùng chọn "Hủy" → hoàn tác lại checkbox
+        e.target.checked = !newState;
+        return;
+        }
+
+        try {
+        const response = await fetch('/api/toggle_stake_track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chain: chain, pool_address: poolAddress })
+        });
+
+        const result = await response.json();
+
+        if (!result.success) {
+            alert('❌ ' + result.message);
+            e.target.checked = !e.target.checked; // rollback nếu lỗi
+        } else {
+            console.log(`✅ ${chain}:${poolAddress} → ${result.is_stake_tracked}`);
+        }
+        } catch (err) {
+        console.error('Error:', err);
+        alert('⚠️ Lỗi khi thay đổi trạng thái tracking');
+        e.target.checked = !e.target.checked; // rollback khi lỗi
+        }
+    });
+    });
+  </script>
+
+<script>
+    // Filter by Token name
+    // --- Debounce helper ---
+    function debounce(func, delay) {
+        let timeout;
+        return (...args) => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func(...args), delay);
+        };
+    }
+
+    // --- Cache rows ---
+    let rowCache = [];
+
+    function buildRowCache() {
+        rowCache = []; // reset
+        const tables = document.querySelectorAll('.data-table tbody');
+
+        tables.forEach(table => {
+            const rows = table.querySelectorAll('tr');
+            rows.forEach(row => {
+                rowCache.push({
+                    element: row,
+                    text: row.textContent.toUpperCase() // cache text sẵn
+                });
+            });
+        });
+
+        console.log(`✅ Cached ${rowCache.length} rows for filtering`);
+    }
+
+    // --- Filter function ---
+    function filterRows(filter) {
+        // Tách filter thành mảng các từ khóa, loại bỏ chuỗi trống
+        const tokens = filter
+            .split(/[\s,]+/) // tách bởi khoảng trắng hoặc dấu phẩy
+            .map(t => t.trim())
+            .filter(Boolean);
+
+        rowCache.forEach(({ element, text }) => {
+            // Kiểm tra nếu tất cả các token đều xuất hiện trong dòng
+            const match = tokens.every(token => text.includes(token));
+            element.style.display = match ? '' : 'none';
+        });
+    }
+
+    // --- Setup filter ---
+    const tokenFilter = document.getElementById('tokenFilterPool');
+    if (tokenFilter) {
+        tokenFilter.addEventListener(
+            'keyup',
+            debounce(function (e) {
+                const filter = e.target.value.trim().toUpperCase();
+                filterRows(filter);
+            }, 200)
+        );
+    }
+
+    // --- Build cache lần đầu ---
+    buildRowCache();
+
+    // 👉 Khi bảng refresh (1h/lần) thì gọi lại buildRowCache()
+
+    // --- Table View Selector ---
+    const selector = document.getElementById("tableViewSelector");
+    const evmWrapper = document.getElementById("evm-table-wrapper");
+    const solWrapper = document.getElementById("sol-table-wrapper");
+
+    if (selector) {
+        selector.addEventListener("change", function () {
+            const value = this.value;
+            if (value === "all") {
+            evmWrapper.style.display = "";
+            solWrapper.style.display = "";
+            } else if (value === "evm") {
+            evmWrapper.style.display = "";
+            solWrapper.style.display = "none";
+            } else if (value === "sol") {
+            evmWrapper.style.display = "none";
+            solWrapper.style.display = "";
+            }
+        });
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+        const chainFilter = document.getElementById("chainFilter");
+        const table = document.querySelector(".data-table");
+        const tbody = table.tBodies[0];
+        const rows = Array.from(tbody.rows);
+
+        chainFilter.addEventListener("change", function () {
+            const v = this.value.trim();
+            if (!v) {
+                // show all
+                rows.forEach(r => r.style.display = "");
+                return;
+            }
+            const lower = v.toLowerCase();
+            rows.forEach(row => {
+                // cột chain là cột thứ 2 (index 1)
+                const chainCell = row.cells[1];
+                const chainText = chainCell ? chainCell.textContent.trim().toLowerCase() : "";
+                row.style.display = chainText.includes(lower) ? "" : "none";
+            });
+        });
+    });
+
+    function validatePool(liqPool, liqStaked, currentLiquidity, cakeReward1h) {
+        const ratio = liqPool > 0 ? liqStaked / liqPool : 0;
+        const flags = [];
+        const highlightCols = new Set();
+        let severity = "ok"; // <-- đúng tên biến, không phải 'serverity'
+
+        // 1️⃣ Staked quá thấp
+        if (ratio < 0.01) {
+            flags.push(`⚠️ Staked too low (${(ratio * 100).toFixed(2)}%)`);
+            highlightCols.add("total-active-staked-liquidity-highlight");
+            severity = "warning";
+        }
+
+        if (currentLiquidity > 0 && liqStaked > 0) {
+            const ratio2 = currentLiquidity / liqStaked;
+            if (ratio2 > 0.8 && cakeReward1h < 5) {
+                flags.push(`⚠️ Possible wrong stakedLiquidity calculation — ratio ${(ratio2 * 100).toFixed(1)}%, Cake/hr=${cakeReward1h.toFixed(2)}%`);
+                highlightCols.add("total-active-staked-liquidity-highlight");
+                severity = "warning";
+            }
+        }
+
+        return { flags, highlightCols, severity };
+    }
+
+    document.addEventListener("DOMContentLoaded", function () {
+        const rows = document.querySelectorAll("#poolTable tbody tr");
+
+        rows.forEach(row => {
+            // 🔹 Lấy giá trị từ data attributes
+            const liqPool = parseFloat(row.querySelector('[data-label="Total Value Locked"]')?.textContent.replace(/,/g, '') || 0);
+            const liqStaked = parseFloat(row.querySelector('[data-label="Total Staked Liquidity"]')?.textContent.replace(/,/g, '') || 0);
+            // const allocPoint = parseFloat(row.querySelector('[data-label="Alloc Point"]')?.textContent || 0);
+            // const cakeReward = parseFloat(row.querySelector('.cake-per-day-highlight')?.dataset.cakeReward || 0);
+            // const farmApr = parseFloat(row.querySelector('[data-label="Farm APR"]')?.dataset.farmApr || 0);
+            const currentLiquidity = parseFloat(row.querySelector('[data-label="Total Current Liquidity"]')?.textContent.replace(/,/g, '') || 0);
+            const cakeReward1h = parseFloat(row.querySelector('.cake-reward-1h-highlight')?.textContent.replace(/,/g, '') || 0);
+            const isStakeTracked = row.querySelector('.stake-track-toggle')?.checked || false;
+
+            if (!isStakeTracked) {
+                return;
+            }
+            const result = validatePool(liqPool, liqStaked, currentLiquidity, cakeReward1h);
+
+            // 🔹 Highlight các ô có vấn đề
+            result.highlightCols.forEach(cls => {
+                const el = row.querySelector(`.${cls}`);
+                if (el) el.classList.add("highlight");
+            });
+
+            // 🔹 Đánh màu toàn hàng theo mức độ nghiêm trọng
+            if (result.severity === "critical") {
+                row.classList.add("table-danger");
+            } else if (result.severity === "warning") {
+                row.classList.add("table-warning");
+            }
+
+            // 🔹 Tooltip mô tả cảnh báo
+            if (result.flags.length > 0) {
+                row.title = result.flags.join("\n");
+            }
+        });
+    });
+</script>
+
+<script>
+    function openDexChart(chain, poolAddress) {
+        if (chain == 'BNB'){
+        chain = 'bsc'
+        }
+        else if (chain == 'ETH'){
+            chain = 'ethereum'
+        }
+        else if (chain == 'ARB'){
+            chain = 'arbitrum'
+        }
+        else if (chain == 'LIN'){
+            chain = 'linea'
+        }
+        else if (chain == 'POL'){
+            chain = 'polygon'
+        }
+        else if (chain == 'BAS'){
+            chain = 'base'
+        }
+        else if (chain == 'SOL'){
+            chain = 'solana'
+        }
+
+        const url = `https://dexscreener.com/${chain}/${poolAddress.toLowerCase()}?embed=1`
+        console.log("Opening DEX chart:", url);
+        document.getElementById('dexIframe').src = url;
+        document.getElementById('dexModal').style.display = 'block';
+    }
+
+    function closeDexModal() {
+        document.getElementById('dexIframe').src = "";
+        document.getElementById('dexModal').style.display = 'none';
+    }
+</script>
+
+{% endblock %}

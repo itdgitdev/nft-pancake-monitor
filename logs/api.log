@@ -1,0 +1,5 @@
+2025-12-03 14:01:46,913 | INFO     | API | ✅ So11111111111111111111111111111111111111112 (CMC 16116) = 142.789662 USD
+2025-12-03 14:01:48,147 | INFO     | API | ✅ EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v (CMC 3408) = 0.999936 USD
+2025-12-03 14:41:25,504 | ERROR    | API | [ERROR] Khi lấy giá EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v, attempt 1: HTTPSConnectionPool(host='pro-api.coinmarketcap.com', port=443): Max retries exceeded with url: /v2/cryptocurrency/quotes/latest?id=3408&convert=USD (Caused by NameResolutionError("<urllib3.connection.HTTPSConnection object at 0x000001E2810AA660>: Failed to resolve 'pro-api.coinmarketcap.com' ([Errno 11001] getaddrinfo failed)"))
+2025-12-03 14:41:28,429 | INFO     | API | ✅ EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v (CMC 3408) = 1.000040 USD
+2025-12-03 14:41:29,094 | INFO     | API | ✅ HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr (CMC 20641) = 1.164523 USD
