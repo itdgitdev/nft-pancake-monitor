@@ -211,7 +211,7 @@
                     {% endif %}
                     <td>{{ pool.timestamp }}</td>
                     <td data-label="Action">
-                        <a href="{{ url_for('mint_position_data', chain=pool.chain, pool_address=pool.pool_account) }}" target="_blank" class="btn btn-primary">Mint</a>
+                        <a href="{{ url_for('price_range_pool_sol', pool_id=pool.pool_account) }}" target="_blank" class="btn btn-primary btn-sm btn-check-range" role="button">Pool Ranges</a>
                     </td>
                 </tr>
                 {% endfor %}

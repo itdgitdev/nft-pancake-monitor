@@ -61,7 +61,7 @@
                     <th onclick="sortTable(6, this)">Token0 Amount <span class="sort-icon">⇅</span></th>
                     <th onclick="sortTable(7, this)">Token1 Amount <span class="sort-icon">⇅</span></th>
                     <th onclick="sortTable(8, this)">Value $ <span class="sort-icon">⇅</span></th>
-
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
@@ -86,6 +86,9 @@
                         {{ pool_ranges["token1_symbol"] }}
                     </td>
                     <td>{{ "{:,.2f}".format(r.total_value) }}</td>
+                    <td data-label="Action">
+                        <a href="{{ url_for('mint_position_data', chain='SOL', pool_address=pool_id, min_price=r.price_low, max_price=r.price_up) }}" target="_blank" class="btn btn-primary">Mint</a>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>

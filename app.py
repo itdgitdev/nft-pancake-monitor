@@ -623,7 +623,7 @@ def get_transactions():
   return jsonify(transaction_history)
 
 CACHE = {}
-CACHE_TTL = 600  # 10 phút
+CACHE_TTL = 300  # 5 phút
 
 def get_cache(amm, pool_id):
     key = f"{amm}:{pool_id}"
@@ -641,14 +641,14 @@ def set_cache(amm, pool_id, data):
     CACHE[key] = (data, time.time())
 
 
-@app.route("/price_range_pool_sol", methods=['GET', 'POST'])
-def price_range_pool_sol():
-    pool_id = None
+@app.route("/price_range_pool_sol/<pool_id>", methods=['GET', 'POST'])
+def price_range_pool_sol(pool_id):
+    # pool_id = None
     amm = "pancake"   # mặc định pancake
     pool_ranges = None
 
     if request.method == 'POST':
-        pool_id = request.form.get('pool_id')
+        pool_id = request.form.get('pool_id') or pool_id
         amm = request.form.get('amm', 'pancake')
         
         if pool_id and amm:
@@ -674,13 +674,14 @@ def price_range_pool_sol():
 
                 set_cache(amm, pool_id, pool_ranges)
 
-            session["last_pool_id"] = pool_id
+            # session["last_pool_id"] = pool_id
             session["last_amm"] = amm
     else:
-        pool_id = session.get("last_pool_id")
-        amm = session.get("last_amm", "pancake")
-        if pool_id and amm:
-            pool_ranges = get_cache(amm, pool_id)
+        # pool_id = session.get("last_pool_id")
+        # amm = session.get("last_amm", "pancake")
+        # if pool_id and amm:
+            
+        pool_ranges = get_cache(amm, pool_id)
 
     message = session.pop('message', None)
     
@@ -720,14 +721,28 @@ def api_current_tick_update():
 def view_transactions():
   return render_template("transactions/transactions.html", title='Transactions History')
 
-@app.route('/mint_position/<chain>/<pool_address>')
-def mint_position_data(chain, pool_address):
+@app.route('/mint_position/<chain>/<pool_address>/<min_price>/<max_price>')
+def mint_position_data(chain, pool_address, min_price, max_price):
     if chain == "SOL":
         mint_data = get_data_mint_sol(chain, CLIENT, pool_address)
-        return render_template('pools_liquidity/mint_position_sol.html', mint_data=mint_data, chain=chain, pool_address=pool_address)
+        return render_template(
+                                'pools_liquidity/mint_position_sol.html', 
+                                mint_data=mint_data, 
+                                chain=chain, 
+                                pool_address=pool_address,
+                                min_price=min_price,
+                                max_price=max_price
+                               )
     
     mint_data = get_data_mint(chain, pool_address)
-    return render_template('pools_liquidity/mint_position.html', mint_data=mint_data, chain=chain, pool_address=pool_address)
+    return render_template(
+            'pools_liquidity/mint_position.html', 
+            mint_data=mint_data, 
+            chain=chain, 
+            pool_address=pool_address, 
+            min_price=min_price,
+            max_price=max_price
+        )
 
 def safe_float(value: str):
     if isinstance(value, (int, float)):

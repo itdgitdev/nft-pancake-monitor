@@ -136,3 +136,10 @@
     color: #fff;
     text-decoration: underline;
 }
+
+a.btn-check-range {
+    display: inline-flex;     /* Quan trọng */
+    align-items: center;      /* Căn giữa */
+    justify-content: center;
+    text-align: center;
+}
