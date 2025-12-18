@@ -1171,6 +1171,20 @@ def build_mint_position_tx_sol_v7(
         "recent_blockhash": str(recent_blockhash),
     }
 
+def detect_token_program(client, mint: Pubkey) -> Pubkey:
+    resp = client.get_account_info(mint)
+    if resp.value is None:
+        raise ValueError("Mint account does not exist")
+
+    owner = resp.value.owner
+
+    if owner == TOKEN_PROGRAM_ID:
+        return TOKEN_PROGRAM_ID
+    elif owner == TOKEN_2022_PROGRAM_ID:
+        return TOKEN_2022_PROGRAM_ID
+    else:
+        raise ValueError(f"Unknown token program: {owner}")
+
 def build_mint_position_tx_sol_v8(
     client,
     payer_pubkey,
@@ -1216,9 +1230,14 @@ def build_mint_position_tx_sol_v8(
     pool_vault_0 = Pubkey.from_string(str(params["token_vault_0"]))
     pool_vault_1 = Pubkey.from_string(str(params["token_vault_1"]))
 
+    token0_program = detect_token_program(client, vault_0_mint)
+    token1_program = detect_token_program(client, vault_1_mint)
+    print(f"- Token0 Program: {token0_program}")
+    print(f"- Token1 Program: {token1_program}")
+    
     # --- User token ATA ---
-    ata_token0 = get_associated_token_address(position_nft_owner, vault_0_mint)
-    ata_token1 = get_associated_token_address(position_nft_owner, vault_1_mint)
+    ata_token0 = get_associated_token_address(position_nft_owner, vault_0_mint, token0_program)
+    ata_token1 = get_associated_token_address(position_nft_owner, vault_1_mint, token1_program)
 
     # --- Handle WSOL wrapping ---
     temp_wsol_account = None
