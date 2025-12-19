@@ -407,7 +407,7 @@ def find_tick_array_bitmap_ext(signature, api_key):
             if len(data_bytes) == 1832:
                 return account_key
     
-    raise Exception("TickArrayBitmapExtension account not found")
+    return None
 
 def get_price_ranges_pool_by_personal_position(bytes_length: int, pool_pubkey: Pubkey,  client: Client, program_id: Pubkey, mint_decimals_0: int, mint_decimals_1: int, tick_spacing):
     filters = [
