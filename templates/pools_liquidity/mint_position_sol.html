@@ -21,17 +21,37 @@
                         <input type="hidden" name="current_price" id="current_price" value="{{ mint_data['current_price'] }}">
 
                         <div class="section">
-                            <label for="token0">Token0 Amount({{ mint_data['token0_symbol'] }}): </label>
-                            <input id="token0" name="amount0" type="number" 
-                                placeholder="Token0 amount (e.g. 0.01)"
-                                step="0.0001" 
-                                required>
+                            <!-- Token0 -->
+                            <label for="token0">
+                                Token0 Amount ({{ mint_data['token0_symbol'] }})
+                            </label>
 
-                            <label for="token1">Token1 Amount({{ mint_data['token1_symbol'] }}): </label>
+                            <div class="balance-row">
+                                <div>
+                                    Balance: <span id="token0_balance" class="balance-text">0.000000</span>
+                                </div>
+                                <button type="button" id="token0_max" class="max-btn">MAX</button>
+                            </div>
+
+                            <input id="token0" name="amount0" type="number"
+                                placeholder="Enter amount"
+                                step="0.000000001" required>
+
+
+                            <!-- Token1 -->
+                            <label for="token1">
+                                Token1 Amount ({{ mint_data['token1_symbol'] }})
+                            </label>
+
+                            <div class="balance-row">
+                                <div>
+                                    Balance: <span id="token1_balance" class="balance-text">0.000000</span>
+                                </div>
+                            </div>
+
                             <input id="token1" name="amount1" type="number"
-                                placeholder="Token1 amount (auto calculated)"
-                                step="0.0001"
-                                readonly>
+                                placeholder="Auto-calculated"
+                                step="0.000000001" readonly>
                         </div>
 
                         <div class="section">
@@ -175,7 +195,11 @@
         }
     </script>
 
-    <script>
+        <script type="module">
+        import { getTokenBalance } from '/static/js/mint_position_sol.js';
+
+        const SOL_BUFFER = 0.03;
+        const SOL_MINT = "So11111111111111111111111111111111111111112";
         document.addEventListener("DOMContentLoaded", function() {
             const amount0Input = document.getElementById("token0");
             const amount1Input = document.getElementById("token1");
@@ -183,6 +207,13 @@
             const maxPriceInput = document.getElementById("maxPrice");
             const currentPrice = document.getElementById("current_price");
             const submitBtn = document.querySelector(".submit-btn");
+            const token0_balance = document.getElementById("token0_balance");
+            const token1_balance = document.getElementById("token1_balance"); 
+            const token0_account = "{{ mint_data.token0_address }}";
+            const token1_account = "{{ mint_data.token1_address }}";
+
+            let token0_bal = 0;
+            let token1_bal = 0;
 
             function sqrt(x) {
                 return Math.sqrt(parseFloat(x));
@@ -227,10 +258,12 @@
             function validateForm() {
                 let valid = true;
 
-                // Kiểm tra Amount0
-                if (!amount0Input.value || Number(amount1Input.value) <= 0) {
-                    valid = false;
-                }
+                const amount0 = Number(amount0Input.value);
+                const amount1 = Number(amount1Input.value);
+
+                // Kiểm tra amount >= 0
+                if (!amount0 || amount0 <= 0) valid = false;
+                if (!amount1 || amount1 <= 0) valid = false;
 
                 // Kiểm tra min/max price
                 if (!minPriceInput.value || !maxPriceInput.value) {
@@ -241,10 +274,12 @@
                     }
                 }
 
-                // Khóa/mở nút
-                submitBtn.disabled = !valid;
+                // ❗ Kiểm tra balance
+                if (amount0 > token0_bal) valid = false;
+                if (amount1 > token1_bal) valid = false;
 
-                // Style khi disable
+                // Cập nhật nút submit
+                submitBtn.disabled = !valid;
                 submitBtn.style.opacity = valid ? "1" : "0.5";
                 submitBtn.style.cursor = valid ? "pointer" : "not-allowed";
             }
@@ -258,10 +293,35 @@
             minPriceInput.addEventListener("input", validateForm);
             maxPriceInput.addEventListener("input", validateForm);
 
+            // Load balance
+            (async () => {
+                token0_bal = Number(await getTokenBalance(token0_account));
+                token1_bal = Number(await getTokenBalance(token1_account));
+
+                token0_balance.innerHTML = token0_bal;
+                token1_balance.innerHTML = token1_bal;
+            })();
+
+            document.getElementById("token0_max").onclick = async () => {
+
+                let maxValue = token0_bal; // luôn dùng balance gốc
+
+                // Nếu là SOL → trừ buffer 1 lần
+                if (token0_account === SOL_MINT) {
+                    maxValue = Math.max(0, token0_bal - SOL_BUFFER);
+                    console.log("Adjusted SOL balance", maxValue);
+                }
+
+                document.getElementById("token0").value = maxValue.toFixed(6);
+
+                calcAmount1();
+                validateForm();
+            };
+
             // Khóa submit ngay từ đầu
             validateForm();
         });
-    </script>
 
+    </script>
 
 {% endblock %}

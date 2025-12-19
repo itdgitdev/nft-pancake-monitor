@@ -619,7 +619,7 @@ refreshCurrentTicks(); // chạy ngay lần đầu
             }
 
             try {
-                const response = await fetch("http://nft.relax4.fun/refresh", {
+                const response = await fetch("https://nft.relax4.fun/refresh", {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({chain, wallet_address: wallet, nft_id})

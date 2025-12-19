@@ -143,3 +143,24 @@ a.btn-check-range {
     justify-content: center;
     text-align: center;
 }
+
+/* Balance */
+.balance-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.balance-text {
+    color: #888;
+    font-size: 14px;
+}
+
+.max-btn {
+    padding: 2px 8px;
+    background-color: #eee;
+    border: 1px solid #ccc;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 12px;
+}
