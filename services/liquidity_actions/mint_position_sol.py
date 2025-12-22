@@ -1379,7 +1379,7 @@ def build_mint_position_tx_sol_v8(
         AccountMeta(vault_1_mint, is_signer=False, is_writable=False),
     ]
     
-    tick_array_bitmap_extension_account = get_tick_array_bitmap_account_from_db(pool_id=str(pool_state), tick_lower=params["tick_lower_index"], tick_upper=params["tick_upper_index"])
+    tick_array_bitmap_extension_account = get_tick_array_bitmap_account_from_db(pool_id=str(pool_state))
     if tick_array_bitmap_extension_account is not None:
         keys.append(AccountMeta(Pubkey.from_string(tick_array_bitmap_extension_account), is_signer=False, is_writable=False))
 

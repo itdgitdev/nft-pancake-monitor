@@ -427,7 +427,7 @@ def get_pool_sol_info_from_db(chain_name, pool_account):
         if 'conn' in locals():
             conn.close()
             
-def get_tick_array_bitmap_account_from_db(pool_id, tick_lower, tick_upper):
+def get_tick_array_bitmap_account_from_db(pool_id):
     try:
         conn = get_connection()
         cursor = conn.cursor(dictionary=True)
@@ -435,8 +435,8 @@ def get_tick_array_bitmap_account_from_db(pool_id, tick_lower, tick_upper):
         # ✅ 1. Check trong DB
         cursor.execute("""
             SELECT tick_array_bitmap_extension_account FROM extreme_price_range_pool_sol 
-            WHERE pool_id = %s AND tick_lower = %s AND tick_upper = %s
-        """, (pool_id, tick_lower, tick_upper))
+            WHERE pool_id = %s
+        """, (pool_id, ))
         result = cursor.fetchone()
         if result:
             print("✅ Tick array bitmap account found in DB")
