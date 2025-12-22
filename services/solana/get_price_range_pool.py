@@ -19,6 +19,10 @@ API_KEY = "bb4fcdca-d41d-4930-ada1-6490968dabe4"
 headers = {"Content-Type": "application/json"}
 querystring = {"api-key": API_KEY}
 
+POOLS_ALWAYS_FETCH_BITMAP = [
+    "5YPxToTobawvkbn5rkWKYDhZqHf5v6LAtRLNPGiq6U2A",   
+]
+
 def decode_tick_state_from_raw(data, offset):
     tick, = struct.unpack_from("<i", data, offset)
     offset += 4
@@ -429,6 +433,9 @@ def get_price_ranges_pool_by_personal_position(bytes_length: int, pool_pubkey: P
     accounts_pubkeys = [acc.pubkey for acc in accounts if pool_pubkey_bytes in acc.account.data]
     batches = [accounts_pubkeys[i:i+100] for i in range(0, len(accounts_pubkeys), 100)]
     
+    # check has get tick array bitmap extension account in DB
+    has_fetched_special_pool_bitmap = False
+    
     price_ranges = []
     for batch in batches:
         try:
@@ -450,10 +457,14 @@ def get_price_ranges_pool_by_personal_position(bytes_length: int, pool_pubkey: P
                 price_lower = tick_to_price(tick_lower_index, mint_decimals_0, mint_decimals_1)
                 price_upper = tick_to_price(tick_upper_index, mint_decimals_0, mint_decimals_1)
                 
-                if is_full_range_position(tick_lower_index, tick_upper_index, tick_spacing):
+                is_full_range = is_full_range_position(tick_lower_index, tick_upper_index, tick_spacing)
+                is_special_pool = str(pool_pubkey) in POOLS_ALWAYS_FETCH_BITMAP
+                
+                if is_full_range or (is_special_pool and not has_fetched_special_pool_bitmap):
                     signatute = get_signature_from_nft_mint(nft_mint, API_KEY)
                     tick_array_bitmap_account = find_tick_array_bitmap_ext(signatute, API_KEY)
                     print(f"Full range position found! Personal Position: {pubkey}, NFT Mint: {nft_mint}, Tick Array Bitmap Account: {tick_array_bitmap_account}")
+                    
                     if tick_array_bitmap_account:
                         update_db_extreme_price_ranges(
                             str(pool_pubkey),
@@ -463,6 +474,9 @@ def get_price_ranges_pool_by_personal_position(bytes_length: int, pool_pubkey: P
                             price_upper,
                             str(tick_array_bitmap_account)
                         )
+                    
+                    if is_special_pool:
+                        has_fetched_special_pool_bitmap = True
                 
                 price_ranges.append({
                     "pubkey": str(pubkey),
