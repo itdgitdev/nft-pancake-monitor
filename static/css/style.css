@@ -713,6 +713,23 @@ th {
   gap: 10px;
 }
 
+.strike-red {
+    text-decoration: line-through;
+    text-decoration-color: red;
+    color: red; 
+    font-weight: bold;
+}
+
+.btn-group-action {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.btn-check-range {
+    padding: 3px 6px!important;
+}
+
 /* ✅ Responsive */
 @media screen and (max-width: 820px) {
     .actions-group {

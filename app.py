@@ -25,7 +25,7 @@ import os, secrets
 from eth_account.messages import encode_defunct
 from eth_account import Account
 from web3 import Web3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import time
 from solders.pubkey import Pubkey
@@ -36,8 +36,11 @@ import base58
 import nacl.signing
 import nacl.exceptions
 from services.solana.refresh_nft_data import process_nft, process_nft_evm
+from services.solana.semi_auto_mint.mint_service import MintingService
 
 app = Flask(__name__)
+
+UTC_PLUS_7 = timezone(timedelta(hours=7))
 
 # Thông tin đăng nhập cơ bản
 USERNAME = "admin"
@@ -570,18 +573,36 @@ def nft_blacklist():
 
 def convert_timestamps(pool_list):
     for pool in pool_list:
-        pool["open_time"] = datetime.fromtimestamp(pool["open_time"]).strftime("%Y-%m-%d")
-        pool["end_time"] = datetime.fromtimestamp(pool["end_time"]).strftime("%Y-%m-%d")
+        if "open_time" in pool and "end_time" in pool:
+            pool["open_time"] = datetime.fromtimestamp(
+                pool["open_time"], tz=UTC_PLUS_7
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+            pool["end_time"] = datetime.fromtimestamp(
+                pool["end_time"], tz=UTC_PLUS_7
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+        if "epoch_start" in pool and "epoch_finish" in pool:
+            pool["epoch_start"] = datetime.fromtimestamp(
+                pool["epoch_start"], tz=UTC_PLUS_7
+            ).strftime("%Y-%m-%d %H:%M:%S")
+
+            pool["epoch_finish"] = datetime.fromtimestamp(
+                pool["epoch_finish"], tz=UTC_PLUS_7
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            
     return pool_list
 
 @app.route('/list_pool')
 def list_pool():
     pools = fetch_all_pool_info()
+    pools = convert_timestamps(pools)
     total_cake_per_day_chain = get_total_cake_per_day_each_chain()
     total_weekly_rewards_sol = get_total_weekly_rewards_sol()
     total_cake_per_day_sol = total_weekly_rewards_sol / 7
     pools_sol = fetch_all_pool_sol_info()
     pools_sol = convert_timestamps(pools_sol)
+    now = datetime.now(UTC_PLUS_7).strftime("%Y-%m-%d %H:%M:%S")
 
     explorers = {
         "ARB":"https://pancakeswap.finance/liquidity/pool/arb/",
@@ -595,7 +616,7 @@ def list_pool():
     
     return render_template(
         'pools/list_pool.html', pools=pools, pools_sol=pools_sol, total_cake_per_day_chain=total_cake_per_day_chain, 
-        total_cake_per_day_sol=total_cake_per_day_sol, explorers=explorers, title='List Pool Farm'
+        total_cake_per_day_sol=total_cake_per_day_sol, explorers=explorers, now=now, title='List Pool Farm'
     )
 
 @app.route("/api/transactions", methods=['POST'])
@@ -734,7 +755,7 @@ def mint_position_data(chain, pool_address, min_price, max_price):
                                 max_price=max_price
                                )
     
-    mint_data = get_data_mint(chain, pool_address)
+    # mint_data = get_data_mint(chain, pool_address)
     return render_template(
             'pools_liquidity/mint_position.html', 
             mint_data=mint_data, 
@@ -779,7 +800,7 @@ def get_mint_params_api_sol():
     print(f"amount0: {amount0}, amount1: {amount1}")
     print(f"amount_0_max: {amount_0_max}, amount_1_max: {amount_1_max}")
     amount_1_max = math.ceil(amount_1_max)
-    amount_1_max = int(amount_1_max * 1.0006)  # thêm buffer 0.03%
+    amount_1_max = int(amount_1_max * 1.6)
     print(f"Final amount_1_max with buffer: {amount_1_max}")
     
     if chain == "SOL":
@@ -841,6 +862,62 @@ def refresh_nft():
         "nft_id": nft_id,
         "data": nft_data
     })
+    
+mint_service = MintingService(rpc_url=QUICKNODE_RPC_URL, jupiter_api_key=JUPITER_API_KEY)
+
+@app.route('/semi-auto-mint', methods=['GET', 'POST'])
+def semi_auto_mint_view():
+    pool_address = request.args.get('pool_address', '')
+    return render_template(
+        'pools_liquidity/semi_auto_mint.html',
+        pool_address=pool_address,
+        title='Semi-Automatic Minting'
+    )
+
+@app.route('/api/mint/init', methods=['POST'])
+def init_pool_data():
+    try:
+        data = request.get_json()
+        pool_address = data.get('pool_address')
+        
+        if not pool_address:
+            return jsonify({'error': 'Missing pool_address'}), 400
+
+        # Gọi Service Module 1
+        print(f"🔄 Scanning pool: {pool_address}")
+        context_data = mint_service.get_pool_and_best_position(pool_address)
+        
+        return jsonify({
+            'status': 'success',
+            'data': context_data
+        })
+    except Exception as e:
+        print(f"❌ Error in init_pool_data: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/mint/calculate', methods=['POST'])
+def calculate_plan():
+    try:
+        data = request.get_json()
+        user_wallet = data.get('user_wallet')
+        multiplier = float(data.get('multiplier', 1.0))
+        pool_context_data = data.get('context_data')
+        slippage_bps = int(data.get('slippage_bps', 50))
+
+        if not user_wallet or not pool_context_data:
+            return jsonify({'error': 'Missing required data'}), 400
+
+        # Gọi Service Module 2, 3, 4
+        print(f"🧮 Calculating plan for {user_wallet} with x{multiplier}")
+        plan = mint_service.calculate_mint_plan(user_wallet, multiplier, pool_context_data, slippage_bps)
+        
+        return jsonify({
+            'status': 'success',
+            'data': plan
+        })
+    except Exception as e:
+        print(f"❌ Error in calculate_plan: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

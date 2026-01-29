@@ -80,6 +80,7 @@ export async function signAndSend(msg_base64, position_nft_mint_secret) {
         });
 
         if (sim.value.err) {
+            console.log("❌ Simulation error:", sim.value)
             console.error("❌ Simulation error:", sim.value.err);
             return;
         }
