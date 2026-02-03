@@ -185,9 +185,10 @@ class JupiterSwapper:
                 "code": "INSUFFICIENT_FUNDS_BOTH",
                 "description": f"Insufficient balance for both tokens. Need {missing_0:.4f} {TOKEN0_SYMBOL} and {missing_1:.4f} {TOKEN1_SYMBOL}.",
                 "missing": {"token0": missing_0, "token1": missing_1}
-            }]
+            }], 0.0
         
         swaps_payload = []
+        price_impact_percent = 0.0
 
         # CASE 1: Thiếu Token 1 (Ví dụ: Thiếu SOL hoặc USDC)
         # Cần dùng dư thừa của Token 0 để mua
@@ -203,12 +204,13 @@ class JupiterSwapper:
                     "type": "ERROR",
                     "code": "INSUFFICIENT_FUNDS_TOKEN0",
                     "description": f"Insufficient {TOKEN0_SYMBOL} balance. {TOKEN0_SYMBOL} is not enough (after subtracting gas) to swap.",
-                }]
+                }], price_impact_percent
 
             print(f"[Logic] Missing {missing_1} {TOKEN1_SYMBOL}. Using excess {TOKEN0_SYMBOL} ({excess_0:.4f}) to buy.")
             
             # Lấy giá tham chiếu
             test_quote = self.get_quote(TOKEN0_MINT, TOKEN1_MINT, 1 * (10**TOKEN0_DECIMALS), slippage_bps) 
+            
             if test_quote and 'outAmount' in test_quote:
                 out_human = int(test_quote['outAmount']) / (10**TOKEN1_DECIMALS)
                 price_0_vs_1 = out_human 
@@ -221,18 +223,27 @@ class JupiterSwapper:
                         "code": "INSUFFICIENT_SWAP_BALANCE",
                         "description": f"Need to sell {amount_in_needed:.4f} {TOKEN0_SYMBOL} to buy enough {TOKEN1_SYMBOL}, but only have {excess_0:.4f}.",
                         "missing": {"token0_needed": amount_in_needed, "token0_available": excess_0}
-                    }]
+                    }], price_impact_percent
 
                 amount_in_lamports = int(amount_in_needed * (10**TOKEN0_DECIMALS))
                 real_quote = self.get_quote(TOKEN0_MINT, TOKEN1_MINT, amount_in_lamports, slippage_bps)
+                print(f"Quote: {real_quote}")
                 
                 if real_quote:
+                    route_labels = [step['swapInfo']['label'] for step in real_quote.get('routePlan', [])]
+                    route_display = " -> ".join(route_labels)
+                    print(route_display, route_labels)
+                    
                     tx_base64 = self.get_swap_tx(real_quote, user_pubkey_str)
+                    price_impact_percent = float(real_quote.get('priceImpactPct', 0.0))
+                    
                     if tx_base64:
                         swaps_payload.append({
                             "type": "SWAP_0_TO_1",
                             "description": f"Swap {amount_in_needed:.4f} {TOKEN0_SYMBOL} -> {missing_1:.2f} {TOKEN1_SYMBOL} (Auto-balance)",
-                            "tx_base64": tx_base64
+                            "tx_base64": tx_base64,
+                            "route": route_display,
+                            "route_steps": route_labels
                         })
 
         # CASE 2: Thiếu Token 0 (TRƯỜNG HỢP CỦA BẠN: Meme coin = 0)
@@ -249,11 +260,12 @@ class JupiterSwapper:
                     "type": "ERROR",
                     "code": "INSUFFICIENT_FUNDS_TOKEN1",
                     "description": f"Insufficient {TOKEN1_SYMBOL} balance. {TOKEN1_SYMBOL} is not enough (after subtracting gas) to swap.",
-                }]
+                }], price_impact_percent
 
             print(f"[Logic] Missing {missing_0} {TOKEN0_SYMBOL}. Using excess {TOKEN1_SYMBOL} ({excess_1:.4f}) to buy.")
 
             test_quote = self.get_quote(TOKEN1_MINT, TOKEN0_MINT, 1 * (10**TOKEN1_DECIMALS), slippage_bps)
+            
             if test_quote and 'outAmount' in test_quote:
                 out_human = int(test_quote['outAmount']) / (10**TOKEN0_DECIMALS)
                 price_1_vs_0 = out_human
@@ -266,21 +278,29 @@ class JupiterSwapper:
                         "code": "INSUFFICIENT_SWAP_BALANCE",
                         "description": f"Need to sell {amount_in_needed:.4f} {TOKEN1_SYMBOL} to buy enough {TOKEN0_SYMBOL}, but only have {excess_1:.4f}.",
                         "missing": {"token1_needed": amount_in_needed, "token1_available": excess_1}
-                    }]
+                    }], price_impact_percent
 
                 amount_in_lamports = int(amount_in_needed * (10**TOKEN1_DECIMALS))
                 real_quote = self.get_quote(TOKEN1_MINT, TOKEN0_MINT, amount_in_lamports, slippage_bps)
+                print(f"Quote: {real_quote}")
                 
                 if real_quote:
+                    route_labels = [step['swapInfo']['label'] for step in real_quote.get('routePlan', [])]
+                    route_display = " -> ".join(route_labels)
+                    print(route_display, route_labels)
+                    
                     tx_base64 = self.get_swap_tx(real_quote, user_pubkey_str)
+                    price_impact_percent = float(real_quote.get('priceImpactPct', 0.0))
                     if tx_base64:
                         swaps_payload.append({
                             "type": "SWAP_1_TO_0",
                             "description": f"Swap {amount_in_needed:.4f} {TOKEN1_SYMBOL} -> {missing_0:.4f} {TOKEN0_SYMBOL} (Auto-balance)",
-                            "tx_base64": tx_base64
+                            "tx_base64": tx_base64,
+                            "route": route_display,
+                            "route_steps": route_labels
                         })
                     
-        return swaps_payload
+        return swaps_payload, price_impact_percent
 
 # # --- INTEGRATION TEST BLOCK ---
 # if __name__ == "__main__":

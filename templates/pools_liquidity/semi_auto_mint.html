@@ -31,7 +31,7 @@
         <!-- Pool Info -->
         <div class="stats shadow w-full bg-base-200">
             <div class="stat">
-                <div class="stat-title font-bold">Cặp Token</div>
+                <div class="stat-title font-bold">Pool</div>
                 <div class="stat-value text-xl text-primary" id="tokenPairDisplay">...</div>
             </div>
             <div class="stat">
@@ -116,7 +116,7 @@
                         </div>
                     </div>
                     <div class="items-center p-4 bg-base-200 rounded-lg">
-                        <span class="font-mono text-lg" id="lblLiquidityUSD">Liquidity(USD): $0.00</span>
+                        <span class="font-mono text-lg" id="lblLiquidityUSD">Liquidity Minted(USD): $0.00</span>
                     </div>
                 </div>
 
@@ -134,31 +134,39 @@
             </div>
         </div>
 
-                <!-- Multiplier Slider -->
+        <!-- Multiplier Slider -->
         <div class="card bg-base-100 shadow-xl border-2 border-primary">
             <div class="card-body">
-                <!-- ... (Slider giữ nguyên) ... -->
-
-                <!-- NEW: Slippage Settings -->
-                <div class="flex justify-between items-center mt-4 border-t border-base-300 pt-4">
+                <span class="font-mono text-lg" id="priceImpact">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-right: 4px;">
+                        <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>
+                    </svg>
+                    Price Impact(%): 0.00%</span>
+                <span class="font-mono text-lg" id="routeDex">📍 Route: Unknown Dex</span>
+                <br>
+                <div class="flex justify-between items-center pt-4 border-t border-base-300">
                     <div class="text-sm font-bold opacity-70 flex items-center gap-1">
                         🛡️ Max Slippage
-                        <div class="tooltip" data-tip="Chấp nhận trượt giá tối đa khi Swap">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="w-4 h-4 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <div class="tooltip" data-tip="Độ trượt giá tối đa chấp nhận khi Swap">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="w-4 h-4 stroke-current cursor-help"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                         </div>
                     </div>
-                    <div class="join">
-                        <button class="join-item btn btn-sm btn-active" data-slippage="50">0.5%</button>
+                    <div class="join" id="slippageGroup" style="display: flex; gap: 10px;">
+                        <button class="join-item btn btn-sm btn-active btn-primary" data-slippage="10">0.1%</button>
+                        <button class="join-item btn btn-sm" data-slippage="50">0.5%</button>
                         <button class="join-item btn btn-sm" data-slippage="100">1.0%</button>
-                        <button class="join-item btn btn-sm" data-slippage="200">2.0%</button>
-                        <button class="join-item btn btn-sm" data-slippage="500">5.0%</button>
+                        <!-- Custom Slippage Input -->
+                        <div class="join-item relative"> 
+                            <input type="number" id="customSlippage"
+                                class="input input-sm input-bordered w-24 text-center pr-6 text-xs focus:outline-none"
+                                placeholder="Custom" 
+                                step="0.01" min="0.01" max="50">
+                            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs opacity-50">%</span>
+                        </div>
                     </div>
                 </div>
-
-                <!-- ... (Phần Estimates giữ nguyên) ... -->
             </div>
         </div>
-
     </div>
 </div>
 

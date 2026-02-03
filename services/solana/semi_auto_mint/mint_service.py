@@ -9,7 +9,7 @@ if BASE_DIR not in sys.path:
 from solders.pubkey import Pubkey
 from solana.rpc.api import Client
 from services.solana.semi_auto_mint.reward_estimator import RewardEstimator
-from services.solana.semi_auto_mint.scan_pool import analyze_pool_ticks
+from services.solana.semi_auto_mint.scan_pool import analyze_pool_ticks, get_position_owner
 from services.solana.semi_auto_mint.swapper import JupiterSwapper
 from services.solana.semi_auto_mint.executor import PositionExecutor # Import mới
 
@@ -41,6 +41,18 @@ class MintingService:
         
         if not best_position:
             raise Exception("No active position found in this pool to copy.")
+        
+        nft_mint = best_position.get('nft_mint') # Đảm bảo scanner trả về field này
+        best_position_owner = None
+        
+        if nft_mint:
+            print(f"🔍 Fetching owner for Position NFT: {nft_mint}")
+            best_position_owner = get_position_owner(self.rpc_client, nft_mint)
+            best_position['owner_address'] = best_position_owner
+            print(f"👤 Position Owner: {best_position_owner}")
+            
+        if "pool_id" not in mock_pool_info:
+            mock_pool_info["pool_id"] = pool_address_str
 
         # Trả về dữ liệu thô để Client/Backend lưu lại
         return {
@@ -64,6 +76,15 @@ class MintingService:
         best_position = pool_context_data['best_position']
         metadata = pool_context_data['token_metadata']
         
+        position_owner = best_position.get('owner_address', None)
+        is_own_position = False
+        warning_msg = None
+        
+        if position_owner and user_wallet_str.lower() == position_owner.lower():
+            is_own_position = True
+            warning_msg = "You are attempting to copy your own position."
+            print(f"⚠️ Warning: User is copying their own position: {position_owner}, ({user_wallet_str})")
+        
         # --- MODULE 2: ESTIMATOR ---
         estimator = RewardEstimator(pool_info=pool_info)
         estimate_result = estimator.estimate_by_multiplier(best_position, multiplier)
@@ -84,13 +105,16 @@ class MintingService:
             'symbol1': metadata['symbol1']
         }
 
-        swap_transactions = self.swapper.calculate_and_prepare_swaps(
+        swap_transactions, price_impact_percent = self.swapper.calculate_and_prepare_swaps(
             user_pubkey_str=user_wallet_str,
             required_assets=req_for_swap,
             current_balances=None, 
             mints_map=mints_map,
             slippage_bps=slippage_bps
         )
+        
+        print(f"DEBUG: Price Impact: {price_impact_percent}%")
+        print(f"DEBUG: Swap Transactions: {swap_transactions}")
         
         # Check nếu có lỗi funds thì return sớm
         for tx in swap_transactions:
@@ -101,7 +125,11 @@ class MintingService:
                         "estimated_reward_share": estimate_result['reward_share_percent'],
                         "liquidity_minted": estimate_result['estimated_liquidity'],
                         "is_range_active": estimate_result['range_info']['is_active'],
-                        "range_safety": estimate_result['range_info'].get('safety', {})
+                        "range_safety": estimate_result['range_info'].get('safety', {}),
+                        "self_copy_warning": {
+                            "is_own": is_own_position,
+                            "message": warning_msg
+                        }
                     },
                     "requirements": {
                         "token0": {
@@ -115,7 +143,11 @@ class MintingService:
                             "mint": metadata['token1']
                         }
                     },
-                    "actions": {"swaps": swap_transactions, "can_mint": False}
+                    "actions": {
+                        "swaps": swap_transactions, 
+                        "can_mint": False,
+                        "price_impact": price_impact_percent
+                    }
                 }
 
         # --- MODULE 4: EXECUTOR (TẠO LỆNH MINT) ---
@@ -156,7 +188,11 @@ class MintingService:
                 "estimated_reward_share": estimate_result['reward_share_percent'],
                 "liquidity_minted": estimate_result['estimated_liquidity'],
                 "is_range_active": estimate_result['range_info']['is_active'],
-                "range_safety": estimate_result['range_info'].get('safety', {}) 
+                "range_safety": estimate_result['range_info'].get('safety', {}),
+                "self_copy_warning": {
+                    "is_own": is_own_position,
+                    "message": warning_msg
+                }
             },
             "requirements": {
                 "token0": {
@@ -172,6 +208,7 @@ class MintingService:
             },
             "actions": {
                 "swaps": swap_transactions,
+                "price_impact": price_impact_percent,
                 "mint_tx": mint_tx_result, # Chứa tx_base64 đã ký một phần
                 "can_mint": mint_tx_result and "tx_base64" in mint_tx_result
             }

@@ -22,6 +22,8 @@ const UI = {
     currentTick: document.getElementById('currentTick'),
     liquidity: document.getElementById('liquidity'),
     liquidityUSD: document.getElementById('liquidityUSD'),
+    priceImpact: document.getElementById('priceImpact'),
+
     slider: document.getElementById('multiplierSlider'),
     badge: document.getElementById('multiplierBadge'),
     estShare: document.getElementById('estShare'),
@@ -39,6 +41,9 @@ const UI = {
     actionText: document.getElementById('actionText'),
     spinner: document.getElementById('spinner'),
     slippageButtons: document.querySelectorAll('[data-slippage]'),
+    customSlippageInput: document.getElementById('customSlippage'),
+
+    routeDex: document.getElementById('routeDex')
 };
 
 const RPC_URL = "https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/a2995d002f97f0eb9165a1d8ce906d2ce626aa85/";
@@ -233,7 +238,7 @@ function renderInitData() {
     const maxPrice = tick_to_price(pos.tick_up, mint0Decimals, mint1Decimals);
     const currentPrice = tick_to_price(poolInfo.tick_current, mint0Decimals, mint1Decimals);
     
-    UI.tokenPairDisplay.innerText = `${meta.symbol0} / ${meta.symbol1}`;
+    UI.tokenPairDisplay.innerText = `${meta.symbol0} / ${meta.symbol1} ($${pos.token0_price.toFixed(2)} / $${pos.token1_price.toFixed(2)})`;
     UI.rangeDisplay.innerText = `[ Tick: ${minPrice} ↔ ${maxPrice} ]`;
     UI.liquidity.innerText = `${Intl.NumberFormat().format(pos.liquidity)}`;
     UI.liquidityUSD.innerText = `$${pos.total_value.toFixed(2)}`;
@@ -241,7 +246,6 @@ function renderInitData() {
     UI.lblToken0.innerText = meta.symbol0;
     UI.lblToken1.innerText = meta.symbol1;
 }
-
 
 // ============================================
 // 3. MODULE CALCULATE (Cập nhật Live)
@@ -271,6 +275,36 @@ UI.slippageButtons.forEach(btn => {
         
         showToast(`Đã chỉnh Slippage: ${val/100}%`, 'info');
     });
+});
+
+// 2. Xử lý input custom (Debounce)
+let slippageDebounce;
+UI.customSlippageInput.addEventListener('input', (e) => {
+    clearTimeout(slippageDebounce);
+    
+    let val = parseFloat(e.target.value);
+
+    slippageDebounce = setTimeout(() => {
+        if (!isNaN(val) && val > 0) {
+            UI.slippageButtons.forEach(b => b.classList.remove('btn-active', 'btn-primary'));
+
+            // Chuyển sang BPS và đảm bảo tối thiểu là 1 BPS
+            let bps = Math.round(val * 100);
+            
+            if (val > 0 && bps === 0) {
+                showToast(`Cảnh báo: ${val}% là quá nhỏ, hệ thống sẽ làm tròn về 0%`, 'warning');
+            }
+
+            state.currentSlippage = bps;
+            
+            if (state.poolContext) {
+                const multiplier = parseFloat(UI.slider.value);
+                calculatePlan(multiplier);
+            }
+
+            showToast(`Slippage: ${val}%`, 'info');
+        }
+    }, 500);
 });
 
 async function calculatePlan(multiplier) {
@@ -310,6 +344,19 @@ async function calculatePlan(multiplier) {
 }
 
 function renderPlan(plan) {
+
+    // 2. Logic Hiển thị Cảnh báo & Nút bấm (Tích lũy thông báo)
+    const swaps = plan.actions?.swaps || [];
+    const canMint = plan.actions?.can_mint;
+    const hasError = plan.summary?.error || swaps.some(s => s.type === 'ERROR');
+
+    // Mảng chứa các thông báo sẽ hiển thị
+    let alertMessages = [];
+    let alertType = "hidden"; // Mặc định ẩn
+    let btnText = "";
+    let btnDisabled = false;
+    let btnAction = null;
+
     // 1. Cập nhật Số liệu
     if (plan.summary) {
         if (typeof plan.summary.estimated_reward_share === 'number') {
@@ -330,23 +377,49 @@ function renderPlan(plan) {
         // Kiểm tra xem token_price có tồn tại không trước khi tính
         if (pos && pos.token0_price !== undefined && pos.token1_price !== undefined) {
             const usdVal = plan.requirements.token0.amount * pos.token0_price + plan.requirements.token1.amount * pos.token1_price;
-            if (UI.lblLiquidityUSD) UI.lblLiquidityUSD.innerText = `Liquidity(USD): $${usdVal.toFixed(2)}`;
+            if (UI.lblLiquidityUSD) UI.lblLiquidityUSD.innerText = `Liquidity Minted(USD): $${usdVal.toFixed(2)}`;
         }
+    }
+
+    if (plan.actions) {
+        if (typeof plan.actions.price_impact === 'number') {
+            if (parseFloat(plan.actions.price_impact) < 1.0) {
+                UI.priceImpact.innerText = `⚡ Price Impact: ${plan.actions.price_impact.toFixed(8)}%`;
+                UI.priceImpact.classList.add('text-success');
+            }
+            else if(parseFloat(plan.actions.price_impact) > 5.0) {
+                UI.priceImpact.innerText = `⚡ Price Impact: ${plan.actions.price_impact.toFixed(8)}%`;
+                UI.priceImpact.classList.add('text-error');
+            }
+            else {
+                UI.priceImpact.innerText = `⚡ Price Impact: ${plan.actions.price_impact.toFixed(8)}%`;
+                UI.priceImpact.classList.add('text-warning');
+            }
+        }
+    }
+
+    if (swaps && swaps[0].route) {
+        const route = swaps[0].route;
+        const routeStep = swaps[0].route_step;
+        UI.routeDex.innerText = `📍 Route: ${route}`;
+    } else {
+        UI.routeDex.innerText = "📍 Route: Unknown Route";
     }
 
     if (state.wallet) fetchWalletBalances();
 
-    // 2. Logic Hiển thị Cảnh báo & Nút bấm (Tích lũy thông báo)
-    const swaps = plan.actions?.swaps || [];
-    const canMint = plan.actions?.can_mint;
-    const hasError = plan.summary?.error || swaps.some(s => s.type === 'ERROR');
-    
-    // Mảng chứa các thông báo sẽ hiển thị
-    let alertMessages = [];
-    let alertType = "hidden"; // Mặc định ẩn
-    let btnText = "";
-    let btnDisabled = false;
-    let btnAction = null;
+    // --- CHECK 0: SELF-COPY WARNING (MỚI) ---
+    if (plan.summary && plan.summary.self_copy_warning && plan.summary.self_copy_warning.is_own) {
+        console.log("⚠️ SELF-COPY WARNING");
+        alertMessages.push(`
+            <div class="mb-2 mb-4">
+                <div class="font-bold text-yellow-800">⚠️ SEFL-COPY WARNING</div>
+                <div class="text-sm text-yellow-800">${plan.summary.self_copy_warning.message}</div>
+            </div>
+        `);
+        // Không block nút Mint, chỉ hiện cảnh báo
+        if (alertType === "hidden") alertType = "alert-warning";
+    }
 
     // --- CHECK 1: RANGE SAFETY (Luôn kiểm tra) ---
     if (plan.summary && plan.summary.range_safety && plan.summary.range_safety.is_safe === false) {
@@ -448,39 +521,14 @@ async function executeTransactionFlow() {
         // BƯỚC 4.1: Ký lệnh Swap
         if (actions.swaps && actions.swaps.length > 0) {
             for (const swap of actions.swaps) {
-                try {
-                    showToast(`Đang ký lệnh Swap (Slippage: ${state.currentSlippage/100}%)...`, 'info');
-                    const txid = await signAndSendBase64(swap.tx_base64, connection);
-                    // ... (Success logic)
-                } catch (swapErr) {
-                    // PHÁT HIỆN LỖI SLIPPAGE
-                    if (swapErr.message.includes("Slippage") || swapErr.message.includes("0x1771")) { // 0x1771: Slippage Exceeded (Jupiter)
-                        console.warn("Slippage Error detected!");
-                        
-                        // Tự động tăng slippage hoặc gợi ý user
-                        const newSlippage = state.currentSlippage * 2; // Gấp đôi slippage
-                        if (newSlippage <= 500) { // Max 5%
-                             showToast(`⚠️ Trượt giá! Đang thử lại với Slippage ${newSlippage/100}%...`, 'warning');
-                             state.currentSlippage = newSlippage;
-                             
-                             // Update UI nút bấm
-                             UI.slippageButtons.forEach(b => {
-                                 b.classList.remove('btn-active', 'btn-primary');
-                                 if(parseInt(b.dataset.slippage) === newSlippage) b.classList.add('btn-active');
-                             });
-
-                             // Tính lại Plan và đệ quy gọi lại execute (hoặc user bấm lại)
-                             await calculatePlan(parseFloat(UI.slider.value));
-                             // Lưu ý: Việc tự động retry ngay lập tức cần cẩn thận để tránh spam ví
-                             // Ở đây ta chỉ recalculate và yêu cầu user bấm lại nút "Swap" (đã update)
-                             showToast("Đã cập nhật lệnh Swap mới. Vui lòng bấm lại!", "info");
-                             return; 
-                        } else {
-                             throw new Error("Trượt giá quá cao (>5%). Vui lòng thử lại sau.");
-                        }
-                    }
-                    throw swapErr; // Ném lỗi khác ra ngoài
-                }
+                // Hiển thị info slippage đang dùng để user biết
+                showToast(`Đang ký Swap (Slippage: ${state.currentSlippage/100}%)...`, 'info');
+                
+                const txid = await signAndSendBase64(swap.tx_base64, connection);
+                showToast(`Swap đã gửi! TX: ${txid.slice(0,8)}...`, 'success');
+                await connection.confirmTransaction(txid, "confirmed");
+                await new Promise(r => setTimeout(r, 2000));
+                fetchWalletBalances();
             }
         }
         

@@ -415,6 +415,39 @@ def find_tick_array_bitmap_ext(signature, api_key):
     
     return None
 
+def get_position_owner(client: Client, nft_mint: str):
+    """
+    Tìm địa chỉ ví đang sở hữu NFT Position.
+    """
+    try:
+        mint_pubkey = Pubkey.from_string(nft_mint)
+        
+        # 1. Tìm Token Account đang giữ NFT (Largest holder, vì NFT supply = 1)
+        largest_accounts = client.get_token_largest_accounts(mint_pubkey)
+        
+        if not largest_accounts.value:
+            return None
+            
+        # Lấy địa chỉ Token Account chứa NFT
+        token_account_pubkey = largest_accounts.value[0].address
+        
+        # 2. Lấy thông tin của Token Account để tìm Owner thực sự (Ví user)
+        acc_info = client.get_account_info(token_account_pubkey)
+        
+        if not acc_info.value:
+            return None
+            
+        data = acc_info.value.data
+        
+        owner_bytes = data[32:64]
+        owner_pubkey = Pubkey(owner_bytes)
+        
+        return str(owner_pubkey)
+        
+    except Exception as e:
+        print(f"⚠️ Error finding owner for NFT {nft_mint}: {e}")
+        return None
+
 def get_price_ranges_pool_by_personal_position(bytes_length: int, pool_pubkey: Pubkey,  client: Client, program_id: Pubkey, mint_decimals_0: int, mint_decimals_1: int, tick_spacing):
     filters = [
         bytes_length
@@ -604,5 +637,3 @@ def analyze_pool_ticks(client, program_id, pool_id, batch_size=100):
         "token0_symbol": token_mint_0_symbol,
         "token1_symbol": token_mint_1_symbol
     }
-    
-    
