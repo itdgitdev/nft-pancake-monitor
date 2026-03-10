@@ -89,11 +89,11 @@ async function checkWalletConnection() {
 // Xử lý khi ví được kết nối thành công
 function handleWalletConnected(walletAddress) {
     state.wallet = walletAddress;
-    
+
     // Cập nhật UI nhỏ góc trên (nếu cần) hoặc thông báo
-    UI.walletInfo.innerText = `Ví: ${walletAddress.slice(0,6)}...${walletAddress.slice(-4)}`;
+    UI.walletInfo.innerText = `Ví: ${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
     UI.walletInfo.classList.remove("hidden");
-    
+
     // Nếu nút đang hiển thị trạng thái kết nối, chuyển sang đã kết nối
     // Nhưng nếu đang tải pool, ta ưu tiên giữ trạng thái loading của pool
 }
@@ -131,7 +131,7 @@ async function fetchWalletBalances() {
             if (mint === "So11111111111111111111111111111111111111112") {
                 const bal = await connection.getBalance(walletPubkey);
                 return bal / 1e9;
-            } 
+            }
             // Check SPL Token
             else {
                 const mintPubkey = new solanaWeb3.PublicKey(mint);
@@ -163,7 +163,7 @@ async function fetchWalletBalances() {
 // ============================================
 async function initPoolData() {
     const poolAddr = UI.poolInput.value.trim();
-    
+
     // Nếu không có pool address, reset nút về trạng thái chờ nhập
     if (!poolAddr) {
         UI.connectText.innerText = "Waiting for Pool Address...";
@@ -176,23 +176,23 @@ async function initPoolData() {
         // Gọi API Backend
         const res = await fetch('/api/mint/init', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pool_address: poolAddr })
         });
         const json = await res.json();
-        
+
         if (json.status !== 'success') throw new Error(json.message);
-        
+
         state.poolContext = json.data;
         renderInitData();
 
         if (state.wallet) fetchWalletBalances();
-        
+
         // Tính toán kế hoạch mẫu (x1.0) để hiển thị số liệu
         // Lưu ý: Lúc này có thể chưa có wallet (state.wallet = null)
         // Backend vẫn tính được Reward Share/Amount, chỉ không tạo được Transaction Swap
         await calculatePlan(1.0);
-        
+
         // Update UI thành công
         UI.mainInterface.classList.remove('hidden');
         UI.connectText.innerText = "Loaded Pool Data ✅";
@@ -206,12 +206,12 @@ async function initPoolData() {
     } catch (err) {
         console.error("Init Error:", err);
         showToast(`❌ Error loading Pool: ${err.message}`, 'error');
-        
+
         // Reset nút để user thử lại
         UI.connectText.innerText = "Try again (Load failed)";
         UI.connectSpinner.classList.add("hidden");
         UI.btnConnect.disabled = false;
-        
+
         // Gán sự kiện click để retry (đã xử lý trong event listener chung ở trên hoặc gán trực tiếp)
         UI.btnConnect.onclick = async () => {
             // Reset UI về trạng thái loading trước khi gọi lại
@@ -237,7 +237,7 @@ function renderInitData() {
     const minPrice = tick_to_price(pos.tick_low, mint0Decimals, mint1Decimals);
     const maxPrice = tick_to_price(pos.tick_up, mint0Decimals, mint1Decimals);
     const currentPrice = tick_to_price(poolInfo.tick_current, mint0Decimals, mint1Decimals);
-    
+
     UI.tokenPairDisplay.innerText = `${meta.symbol0} / ${meta.symbol1} ($${pos.token0_price.toFixed(2)} / $${pos.token1_price.toFixed(2)})`;
     UI.rangeDisplay.innerText = `[ Tick: ${minPrice} ↔ ${maxPrice} ]`;
     UI.liquidity.innerText = `${Intl.NumberFormat().format(pos.liquidity)}`;
@@ -264,16 +264,16 @@ UI.slippageButtons.forEach(btn => {
         // Update UI active state
         UI.slippageButtons.forEach(b => b.classList.remove('btn-active', 'btn-primary'));
         e.target.classList.add('btn-active', 'btn-primary');
-        
+
         // Update state & Recalculate
         const val = parseInt(e.target.dataset.slippage);
         state.currentSlippage = val;
-        
+
         // Gọi lại calculatePlan ngay lập tức để cập nhật lệnh Swap với slippage mới
         const multiplier = parseFloat(UI.slider.value);
         calculatePlan(multiplier);
-        
-        showToast(`Đã chỉnh Slippage: ${val/100}%`, 'info');
+
+        showToast(`Đã chỉnh Slippage: ${val / 100}%`, 'info');
     });
 });
 
@@ -281,7 +281,7 @@ UI.slippageButtons.forEach(btn => {
 let slippageDebounce;
 UI.customSlippageInput.addEventListener('input', (e) => {
     clearTimeout(slippageDebounce);
-    
+
     let val = parseFloat(e.target.value);
 
     slippageDebounce = setTimeout(() => {
@@ -290,13 +290,13 @@ UI.customSlippageInput.addEventListener('input', (e) => {
 
             // Chuyển sang BPS và đảm bảo tối thiểu là 1 BPS
             let bps = Math.round(val * 100);
-            
+
             if (val > 0 && bps === 0) {
                 showToast(`Cảnh báo: ${val}% là quá nhỏ, hệ thống sẽ làm tròn về 0%`, 'warning');
             }
 
             state.currentSlippage = bps;
-            
+
             if (state.poolContext) {
                 const multiplier = parseFloat(UI.slider.value);
                 calculatePlan(multiplier);
@@ -309,19 +309,19 @@ UI.customSlippageInput.addEventListener('input', (e) => {
 
 async function calculatePlan(multiplier) {
     if (!state.poolContext) return;
-    
+
     // Nếu chưa có wallet, gửi address dummy để backend vẫn tính toán được logic
     // (nhưng phần swap tx sẽ không chính xác về số dư)
-    const walletToSend = state.wallet || "11111111111111111111111111111111"; 
-    
+    const walletToSend = state.wallet || "11111111111111111111111111111111";
+
     state.isCalculating = true;
     UI.btnExecute.disabled = true;
     UI.estShare.classList.add('opacity-50');
-    
+
     try {
         const res = await fetch('/api/mint/calculate', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 user_wallet: walletToSend,
                 multiplier: multiplier,
@@ -331,7 +331,7 @@ async function calculatePlan(multiplier) {
         });
         const json = await res.json();
         if (json.status !== 'success') throw new Error(json.message);
-        
+
         state.currentPlan = json.data;
         renderPlan(json.data);
     } catch (err) {
@@ -366,11 +366,11 @@ function renderPlan(plan) {
             UI.estLiquidity.innerText = new Intl.NumberFormat().format(plan.summary.liquidity_minted);
         }
     }
-    
+
     if (plan.requirements) {
         UI.valToken0.innerText = formatTokenAmount(plan.requirements.token0.amount);
         UI.valToken1.innerText = formatTokenAmount(plan.requirements.token1.amount);
-        
+
         // Tính Liquidity USD (nếu có giá từ context)
         const ctx = state.poolContext;
         const pos = ctx.best_position;
@@ -387,7 +387,7 @@ function renderPlan(plan) {
                 UI.priceImpact.innerText = `⚡ Price Impact: ${plan.actions.price_impact.toFixed(8)}%`;
                 UI.priceImpact.classList.add('text-success');
             }
-            else if(parseFloat(plan.actions.price_impact) > 5.0) {
+            else if (parseFloat(plan.actions.price_impact) > 5.0) {
                 UI.priceImpact.innerText = `⚡ Price Impact: ${plan.actions.price_impact.toFixed(8)}%`;
                 UI.priceImpact.classList.add('text-error');
             }
@@ -398,7 +398,7 @@ function renderPlan(plan) {
         }
     }
 
-    if (swaps && swaps[0].route) {
+    if (swaps && swaps.length > 0) {
         const route = swaps[0].route;
         const routeStep = swaps[0].route_step;
         UI.routeDex.innerText = `📍 Route: ${route}`;
@@ -441,7 +441,7 @@ function renderPlan(plan) {
             const connected = await manualConnectWallet();
             if (connected) calculatePlan(parseFloat(UI.slider.value));
         };
-    } 
+    }
     // --- CHECK 3: ERRORS (Critical) ---
     else if (hasError) {
         let errorMsg = plan.summary?.error || "Unknown error";
@@ -454,7 +454,7 @@ function renderPlan(plan) {
                 <div class="text-sm text-red-800">${errorMsg}</div>
             </div>
         `);
-        
+
         alertType = "alert-error"; // Nâng cấp lên error (đỏ)
         btnText = "❌ Insufficient Balance to Swap/Mint";
         btnDisabled = true;
@@ -468,10 +468,10 @@ function renderPlan(plan) {
                 <div class="text-sm text-blue-800">${swapMsg}</div>
             </div>
         `);
-        
+
         // Nếu chưa có error, set là warning/info
-        if (alertType === "hidden") alertType = "alert-warning"; 
-        
+        if (alertType === "hidden") alertType = "alert-warning";
+
         btnText = `🔄 Swap & Mint (x${plan.summary.multiplier})`;
         btnDisabled = false;
         btnAction = executeTransactionFlow;
@@ -485,8 +485,8 @@ function renderPlan(plan) {
 
     // --- RENDER UI ---
     // Reset classes
-    UI.actionWarning.className = "alert mt-4 shadow-lg"; 
-    
+    UI.actionWarning.className = "alert mt-4 shadow-lg";
+
     if (alertMessages.length > 0) {
         UI.actionWarning.classList.add(alertType); // Thêm class màu (warning/error)
         UI.actionWarning.classList.remove('hidden');
@@ -511,10 +511,10 @@ async function executeTransactionFlow() {
         return;
     }
     if (!state.currentPlan) return;
-    
+
     setLoading(true, "Processing transaction...");
     const actions = state.currentPlan.actions;
-    
+
     try {
         const connection = new solanaWeb3.Connection(RPC_URL, "confirmed");
 
@@ -522,73 +522,73 @@ async function executeTransactionFlow() {
         if (actions.swaps && actions.swaps.length > 0) {
             for (const swap of actions.swaps) {
                 // Hiển thị info slippage đang dùng để user biết
-                showToast(`Đang ký Swap (Slippage: ${state.currentSlippage/100}%)...`, 'info');
-                
+                showToast(`Đang ký Swap (Slippage: ${state.currentSlippage / 100}%)...`, 'info');
+
                 const txid = await signAndSendBase64(swap.tx_base64, connection);
-                showToast(`Swap đã gửi! TX: ${txid.slice(0,8)}...`, 'success');
+                showToast(`Swap đã gửi! TX: ${txid.slice(0, 8)}...`, 'success');
                 await connection.confirmTransaction(txid, "confirmed");
                 await new Promise(r => setTimeout(r, 2000));
                 fetchWalletBalances();
             }
         }
-        
+
         // BƯỚC 4.2: Ký lệnh Mint
         if (actions.can_mint && actions.mint_tx) {
             showToast("Sign & Send Mint Position transaction...", "info");
-            
+
             // Xử lý Mint TX (có thể là object hoặc string tùy backend trả về)
             let mintTxBase64 = typeof actions.mint_tx === 'string' ? actions.mint_tx : actions.mint_tx.tx_base64;
-            
+
             // === FIX: Refresh Blockhash cho Mint TX ===
             // Vì Mint TX được tạo từ lúc calculate (có thể cách đây vài phút), blockhash đã cũ.
             // Ta cần decode, thay blockhash mới nhất, rồi mới ký.
             try {
                 const txBuffer = Buffer.from(mintTxBase64, 'base64');
                 const transaction = solanaWeb3.VersionedTransaction.deserialize(txBuffer);
-                
+
                 // Lấy Blockhash MỚI NHẤT
                 const { blockhash } = await connection.getLatestBlockhash("confirmed");
                 console.log("Refreshing Mint TX Blockhash:", blockhash);
-                
+
                 // Cập nhật blockhash vào message
                 transaction.message.recentBlockhash = blockhash;
-                
+
                 // Serialize lại để gửi hàm signAndSend (hoặc dùng object trực tiếp)
                 // Lưu ý: Nếu backend đã partial sign, việc đổi blockhash sẽ làm HỎNG chữ ký đó.
                 // Nếu Mint TX cần backend ký (ví dụ tạo NFT mint), thì backend phải ký lại.
                 // TUY NHIÊN: Với Position NFT của Pancake, thường User là payer và signer chính.
                 // Nếu Backend tạo keypair cho NFT mint và ký trước -> Ta KHÔNG THỂ đổi blockhash ở client được nữa
                 // vì chữ ký backend sẽ sai.
-                
+
                 // GIẢI PHÁP: Nếu có swap, sau khi swap xong, GỌI LẠI API CALCULATE để lấy Mint TX mới tinh từ backend.
                 if (actions.swaps && actions.swaps.length > 0) {
                     showToast("Refresh new Mint TX (update balance)...", "info");
-                    
+
                     // Gọi lại API calculatePlan để lấy TX mới với blockhash mới và balance mới
                     const multiplier = parseFloat(UI.slider.value);
                     const res = await fetch('/api/mint/calculate', {
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
+                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             user_wallet: state.wallet,
                             multiplier: multiplier,
-                            context_data: state.poolContext 
+                            context_data: state.poolContext
                         })
                     });
                     const json = await res.json();
                     if (json.status !== 'success') throw new Error("Create new Mint TX Failed: " + json.message);
-                    
+
                     // Cập nhật lại TX Mint mới
                     const newPlan = json.data;
                     if (!newPlan.actions.can_mint) throw new Error("Cannot mint after swap (insufficient conditions).");
                     mintTxBase64 = newPlan.actions.mint_tx.tx_base64;
                 }
-                
+
                 // Tiến hành ký và gửi
                 showToast("Signing Mint Position transaction...", "info");
                 const txid = await signAndSendBase64(mintTxBase64, connection);
-                
-                showToast(`🎉 MINT SUCCESS! TX: ${txid.slice(0,8)}...`, 'success');
+
+                showToast(`🎉 MINT SUCCESS! TX: ${txid.slice(0, 8)}...`, 'success');
                 console.log("Mint TXID:", txid);
                 setTimeout(() => calculatePlan(1.0), 3000);
 
@@ -597,7 +597,7 @@ async function executeTransactionFlow() {
                 throw new Error("Error update Mint TX: " + innerErr.message);
             }
         }
-        
+
     } catch (err) {
         console.error("Execution Error:", err);
         if (err.message && err.message.includes("User rejected")) {
@@ -657,10 +657,10 @@ async function signAndSendBase64(txBase64, connection) {
 function formatTokenAmount(amount) {
     if (amount === 0) return "0.00";
     if (amount < 0.0001) return "< 0.0001";
-    return amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6});
+    return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
-function setLoading(isLoading, text="Processing transaction...") {
+function setLoading(isLoading, text = "Processing transaction...") {
     if (isLoading) {
         UI.spinner.classList.remove('hidden');
         UI.btnExecute.disabled = true;
@@ -673,10 +673,10 @@ function setLoading(isLoading, text="Processing transaction...") {
     }
 }
 
-function showToast(msg, type='info') {
+function showToast(msg, type = 'info') {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
-    toast.className = `alert alert-${type} shadow-lg mb-2`; 
+    toast.className = `alert alert-${type} shadow-lg mb-2`;
     toast.innerHTML = `<span>${msg}</span>`;
     container.appendChild(toast);
     setTimeout(() => {
