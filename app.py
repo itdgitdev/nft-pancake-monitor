@@ -874,6 +874,30 @@ def semi_auto_mint_view():
         title='Semi-Automatic Minting'
     )
 
+@app.route('/api/mint/execute-ultra', methods=['POST'])
+def execute_ultra_swap():
+    try:
+        data = request.get_json()
+        signed_tx = data.get('signed_tx')
+        request_id = data.get('request_id')
+
+        if not signed_tx or not request_id:
+            return jsonify({'error': 'Missing signed_tx or request_id'}), 400
+
+        print(f"🚀 Executing Ultra Swap - RequestID: {request_id}")
+        result = mint_service.execute_ultra_swap(signed_tx, request_id)
+        
+        if not result:
+            return jsonify({'status': 'error', 'message': 'Jupiter Ultra execution failed'}), 400
+
+        return jsonify({
+            'status': 'success',
+            'data': result
+        })
+    except Exception as e:
+        print(f"❌ Error in execute_ultra_swap API: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/api/mint/init', methods=['POST'])
 def init_pool_data():
     try:

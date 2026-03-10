@@ -6,7 +6,7 @@ let state = {
     poolContext: null,  // Dữ liệu Pool (Token, Best Position, Decimals...)
     currentPlan: null,  // Kế hoạch Mint hiện tại (Swap TX, Mint TX...)
     isCalculating: false,
-    currentSlippage: 50
+    currentSlippage: 10
 };
 
 // --- DOM Elements ---
@@ -245,6 +245,7 @@ function renderInitData() {
     UI.currentTick.innerText = `${currentPrice}`;
     UI.lblToken0.innerText = meta.symbol0;
     UI.lblToken1.innerText = meta.symbol1;
+    UI.customSlippageInput.value = state.currentSlippage / 100;
 }
 
 // ============================================
@@ -268,6 +269,9 @@ UI.slippageButtons.forEach(btn => {
         // Update state & Recalculate
         const val = parseInt(e.target.dataset.slippage);
         state.currentSlippage = val;
+
+        // Update custom input value
+        UI.customSlippageInput.value = val / 100;
 
         // Gọi lại calculatePlan ngay lập tức để cập nhật lệnh Swap với slippage mới
         const multiplier = parseFloat(UI.slider.value);
@@ -410,7 +414,6 @@ function renderPlan(plan) {
 
     // --- CHECK 0: SELF-COPY WARNING (MỚI) ---
     if (plan.summary && plan.summary.self_copy_warning && plan.summary.self_copy_warning.is_own) {
-        console.log("⚠️ SELF-COPY WARNING");
         alertMessages.push(`
             <div class="mb-2 mb-4">
                 <div class="font-bold text-yellow-800">⚠️ SEFL-COPY WARNING</div>
@@ -462,10 +465,11 @@ function renderPlan(plan) {
     // --- CHECK 4: SWAPS (Info) ---
     else if (swaps.length > 0) {
         const swapMsg = swaps[0].description;
+        const provider = swaps[0].provider;
         alertMessages.push(`
             <div class="mb-2 border-t border-black/10 pt-2">
                 <div class="font-bold text-blue-800">🔄 NEEDS AUTOMATIC BALANCE</div>
-                <div class="text-sm text-blue-800">${swapMsg}</div>
+                <div class="text-sm text-blue-800">Using  ${provider}: ${swapMsg}</div>
             </div>
         `);
 
@@ -521,11 +525,35 @@ async function executeTransactionFlow() {
         // BƯỚC 4.1: Ký lệnh Swap
         if (actions.swaps && actions.swaps.length > 0) {
             for (const swap of actions.swaps) {
-                // Hiển thị info slippage đang dùng để user biết
-                showToast(`Đang ký Swap (Slippage: ${state.currentSlippage / 100}%)...`, 'info');
+                showToast(`Đang ký Swap (${swap.provider || 'Jupiter'})...`, 'info');
 
-                const txid = await signAndSendBase64(swap.tx_base64, connection);
-                showToast(`Swap đã gửi! TX: ${txid.slice(0, 8)}...`, 'success');
+                let txid = "";
+
+                // CASE 1: JUPITER ULTRA (Cần Backend Execute)
+                if (swap.provider === "JupiterUltra") {
+                    console.log("🛠️ Using Jupiter Ultra Execute Flow...");
+                    const signedTxBase64 = await signTransactionOnly(swap.tx_base64);
+
+                    const res = await fetch('/api/mint/execute-ultra', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            signed_tx: signedTxBase64,
+                            request_id: swap.requestId
+                        })
+                    });
+                    const json = await res.json();
+                    if (json.status !== 'success') throw new Error("Jupiter Ultra Execute Failed: " + json.message);
+
+                    txid = json.data.signature;
+                    showToast(`Swap Ultra Success! TX: ${txid.slice(0, 8)}...`, 'success');
+                }
+                // CASE 2: STANDARD FLOW (Gửi trực tiếp lên mạng)
+                else {
+                    txid = await signAndSendBase64(swap.tx_base64, connection);
+                    showToast(`Swap đã gửi! TX: ${txid.slice(0, 8)}...`, 'success');
+                }
+
                 await connection.confirmTransaction(txid, "confirmed");
                 await new Promise(r => setTimeout(r, 2000));
                 fetchWalletBalances();
@@ -539,63 +567,34 @@ async function executeTransactionFlow() {
             // Xử lý Mint TX (có thể là object hoặc string tùy backend trả về)
             let mintTxBase64 = typeof actions.mint_tx === 'string' ? actions.mint_tx : actions.mint_tx.tx_base64;
 
-            // === FIX: Refresh Blockhash cho Mint TX ===
-            // Vì Mint TX được tạo từ lúc calculate (có thể cách đây vài phút), blockhash đã cũ.
-            // Ta cần decode, thay blockhash mới nhất, rồi mới ký.
-            try {
-                const txBuffer = Buffer.from(mintTxBase64, 'base64');
-                const transaction = solanaWeb3.VersionedTransaction.deserialize(txBuffer);
+            // === Refresh Blockhash cho Mint TX nếu cần ===
+            if (actions.swaps && actions.swaps.length > 0) {
+                showToast("Refresh new Mint TX (update balance)...", "info");
 
-                // Lấy Blockhash MỚI NHẤT
-                const { blockhash } = await connection.getLatestBlockhash("confirmed");
-                console.log("Refreshing Mint TX Blockhash:", blockhash);
-
-                // Cập nhật blockhash vào message
-                transaction.message.recentBlockhash = blockhash;
-
-                // Serialize lại để gửi hàm signAndSend (hoặc dùng object trực tiếp)
-                // Lưu ý: Nếu backend đã partial sign, việc đổi blockhash sẽ làm HỎNG chữ ký đó.
-                // Nếu Mint TX cần backend ký (ví dụ tạo NFT mint), thì backend phải ký lại.
-                // TUY NHIÊN: Với Position NFT của Pancake, thường User là payer và signer chính.
-                // Nếu Backend tạo keypair cho NFT mint và ký trước -> Ta KHÔNG THỂ đổi blockhash ở client được nữa
-                // vì chữ ký backend sẽ sai.
-
-                // GIẢI PHÁP: Nếu có swap, sau khi swap xong, GỌI LẠI API CALCULATE để lấy Mint TX mới tinh từ backend.
-                if (actions.swaps && actions.swaps.length > 0) {
-                    showToast("Refresh new Mint TX (update balance)...", "info");
-
-                    // Gọi lại API calculatePlan để lấy TX mới với blockhash mới và balance mới
-                    const multiplier = parseFloat(UI.slider.value);
-                    const res = await fetch('/api/mint/calculate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            user_wallet: state.wallet,
-                            multiplier: multiplier,
-                            context_data: state.poolContext
-                        })
-                    });
-                    const json = await res.json();
-                    if (json.status !== 'success') throw new Error("Create new Mint TX Failed: " + json.message);
-
-                    // Cập nhật lại TX Mint mới
-                    const newPlan = json.data;
-                    if (!newPlan.actions.can_mint) throw new Error("Cannot mint after swap (insufficient conditions).");
-                    mintTxBase64 = newPlan.actions.mint_tx.tx_base64;
+                const multiplier = parseFloat(UI.slider.value);
+                const res = await fetch('/api/mint/calculate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_wallet: state.wallet,
+                        multiplier: multiplier,
+                        context_data: state.poolContext,
+                        slippage_bps: state.currentSlippage
+                    })
+                });
+                const json = await res.json();
+                if (json.status === 'success' && json.data.actions.can_mint) {
+                    mintTxBase64 = json.data.actions.mint_tx.tx_base64;
                 }
-
-                // Tiến hành ký và gửi
-                showToast("Signing Mint Position transaction...", "info");
-                const txid = await signAndSendBase64(mintTxBase64, connection);
-
-                showToast(`🎉 MINT SUCCESS! TX: ${txid.slice(0, 8)}...`, 'success');
-                console.log("Mint TXID:", txid);
-                setTimeout(() => calculatePlan(1.0), 3000);
-
-            } catch (innerErr) {
-                console.error("Refresh Blockhash Error:", innerErr);
-                throw new Error("Error update Mint TX: " + innerErr.message);
             }
+
+            // Tiến hành ký và gửi
+            showToast("Signing Mint Position transaction...", "info");
+            const txid = await signAndSendBase64(mintTxBase64, connection);
+
+            showToast(`🎉 MINT SUCCESS! TX: ${txid.slice(0, 8)}...`, 'success');
+            console.log("Mint TXID:", txid);
+            setTimeout(() => calculatePlan(1.0), 3000);
         }
 
     } catch (err) {
@@ -608,6 +607,23 @@ async function executeTransactionFlow() {
     } finally {
         setLoading(false);
     }
+}
+
+/**
+ * Helper: Chỉ ký giao dịch và trả về base64 (Dùng cho Jupiter Ultra)
+ */
+async function signTransactionOnly(txBase64) {
+    if (!window.solana) throw new Error("❌ Phantom not found");
+    const phantom = window.solana;
+
+    const txBytes = Uint8Array.from(atob(txBase64), (c) => c.charCodeAt(0));
+    let tx = VersionedTransaction.deserialize(txBytes);
+
+    // Yêu cầu user ký
+    tx = await phantom.signTransaction(tx);
+
+    // Serialize lại thành base64 để gửi về backend
+    return btoa(String.fromCharCode.apply(null, tx.serialize()));
 }
 
 // --- Helper Functions ---

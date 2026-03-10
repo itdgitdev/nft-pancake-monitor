@@ -27,6 +27,9 @@ from services.solana.semi_auto_mint.scan_pool import analyze_pool_ticks
 JUPITER_QUOTE_API = "https://api.jup.ag/swap/v1/quote"
 JUPITER_SWAP_API = "https://api.jup.ag/swap/v1/swap"
 
+JUPITER_ORDER_ULTRA_API = "https://api.jup.ag/ultra/v1/order"
+JUPITER_EXECUTE_ULTRA_API = "https://api.jup.ag/ultra/v1/execute"
+
 # Token Mints phổ biến
 SOL_MINT = "So11111111111111111111111111111111111111112"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -139,6 +142,92 @@ class JupiterSwapper:
             print(f"Error building swap tx: {e}")
             return None
 
+    def get_ultra_order_tx(self, input_mint: str, output_mint: str, amount_in_lamports: int, taker: str = None, **kwargs):
+        """
+        Lấy báo giá và serialized transaction từ Jupiter Ultra API (/order).
+        Theo chuẩn OpenAPI, đây là GET request.
+        """
+        params = {
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": str(int(amount_in_lamports)),
+        }
+        if taker:
+            params["taker"] = taker
+            
+        # Bổ sung các tham số tùy chọn khác từ kwargs
+        for key, value in kwargs.items():
+            if value is not None:
+                params[key] = str(value)
+        
+        headers = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        
+        try:
+            print(f"🔄 [JUPITER ULTRA] Đang lấy Order cho {amount_in_lamports} lamports...")
+            # Jupiter Ultra /order là GET request
+            response = self.session.get(JUPITER_ORDER_ULTRA_API, params=params, headers=headers, timeout=12)
+            
+            if response.status_code != 200:
+                print(f"⚠️ [JUPITER ULTRA] Lỗi API ({response.status_code}): {response.text}")
+                return None
+                
+            data = response.json()
+            transaction = data.get("transaction") 
+            requestId = data.get("requestId")
+
+            # Trích xuất route plan từ mảng các bước
+            router_names = []
+            route_plan_data = data.get("routePlan") or [] # Ultra trả về array trực tiếp
+            
+            for step in route_plan_data:
+                swap_info = step.get("swapInfo", {})
+                label = swap_info.get("label", "Unknown")
+                if label not in router_names:
+                    router_names.append(label)
+                    
+            route_str = " -> ".join(router_names) if router_names else "Jupiter Ultra Route"
+            
+            print(f"✅ [JUPITER ULTRA] Tìm thấy Route: {route_str}")
+
+            return {
+                "transaction": transaction,
+                "requestId": requestId,
+                "route_plan": route_str,
+                "outAmount": data.get("outAmount"),
+                "priceImpactPct": data.get("priceImpactPct")
+            }
+        except Exception as e:
+            print(f"❌ Error getting Ultra order: {e}")
+            return None
+
+    def get_execute_ultra_tx(self, signed_transaction: str, requestId: str):
+        """
+        Thực thi giao dịch đã ký thông qua Jupiter Ultra API (/execute).
+        """
+        payload = {
+            "signedTransaction": signed_transaction,
+            "requestId": requestId
+        }
+        
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        
+        try:
+            print(f"🚀 [JUPITER ULTRA] Đang thực thi giao dịch Ultra (RequestID: {requestId})...")
+            response = self.session.post(JUPITER_EXECUTE_ULTRA_API, json=payload, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                print(f"⚠️ [JUPITER ULTRA] Lỗi Execute: {response.text}")
+                return None
+                
+            return response.json() # Trả về status, signature, etc.
+        except Exception as e:
+            print(f"❌ Error executing Ultra tx: {e}")
+            return None
+
     def calculate_and_prepare_swaps(self, user_pubkey_str: str, required_assets: dict, current_balances: dict = None, mints_map: dict = None, slippage_bps: int = 50):
         user_pubkey = Pubkey.from_string(user_pubkey_str)
         
@@ -226,25 +315,30 @@ class JupiterSwapper:
                     }], price_impact_percent
 
                 amount_in_lamports = int(amount_in_needed * (10**TOKEN0_DECIMALS))
-                real_quote = self.get_quote(TOKEN0_MINT, TOKEN1_MINT, amount_in_lamports, slippage_bps)
-                print(f"Quote: {real_quote}")
                 
-                if real_quote:
-                    route_labels = [step['swapInfo']['label'] for step in real_quote.get('routePlan', [])]
-                    route_display = " -> ".join(route_labels)
-                    print(route_display, route_labels)
+                # SỬ DỤNG JUPITER ULTRA API MỚI
+                ultra_order = self.get_ultra_order_tx(
+                    input_mint=TOKEN0_MINT,
+                    output_mint=TOKEN1_MINT,
+                    amount_in_lamports=amount_in_lamports,
+                    taker=user_pubkey_str,
+                    slippageBps=slippage_bps
+                )
+                
+                if ultra_order and ultra_order.get("transaction"):
+                    tx_base64 = ultra_order["transaction"]
+                    request_id = ultra_order.get("requestId")
+                    route_display = ultra_order.get("route_plan", "Jupiter Ultra")
+                    price_impact_percent = float(ultra_order.get('priceImpactPct', 0.0))
                     
-                    tx_base64 = self.get_swap_tx(real_quote, user_pubkey_str)
-                    price_impact_percent = float(real_quote.get('priceImpactPct', 0.0))
-                    
-                    if tx_base64:
-                        swaps_payload.append({
-                            "type": "SWAP_0_TO_1",
-                            "description": f"Swap {amount_in_needed:.4f} {TOKEN0_SYMBOL} -> {missing_1:.2f} {TOKEN1_SYMBOL} (Auto-balance)",
-                            "tx_base64": tx_base64,
-                            "route": route_display,
-                            "route_steps": route_labels
-                        })
+                    swaps_payload.append({
+                        "type": "SWAP_0_TO_1",
+                        "provider": "JupiterUltra",
+                        "description": f"Swap {amount_in_needed:.4f} {TOKEN0_SYMBOL} -> {missing_1:.2f} {TOKEN1_SYMBOL} (Auto-balance)",
+                        "tx_base64": tx_base64,
+                        "requestId": request_id, 
+                        "route": route_display
+                    })
 
         # CASE 2: Thiếu Token 0 (TRƯỜNG HỢP CỦA BẠN: Meme coin = 0)
         # Cần dùng dư thừa của Token 1 (Main Token: SOL/USDC) để mua
@@ -281,24 +375,30 @@ class JupiterSwapper:
                     }], price_impact_percent
 
                 amount_in_lamports = int(amount_in_needed * (10**TOKEN1_DECIMALS))
-                real_quote = self.get_quote(TOKEN1_MINT, TOKEN0_MINT, amount_in_lamports, slippage_bps)
-                print(f"Quote: {real_quote}")
                 
-                if real_quote:
-                    route_labels = [step['swapInfo']['label'] for step in real_quote.get('routePlan', [])]
-                    route_display = " -> ".join(route_labels)
-                    print(route_display, route_labels)
-                    
-                    tx_base64 = self.get_swap_tx(real_quote, user_pubkey_str)
-                    price_impact_percent = float(real_quote.get('priceImpactPct', 0.0))
-                    if tx_base64:
-                        swaps_payload.append({
-                            "type": "SWAP_1_TO_0",
-                            "description": f"Swap {amount_in_needed:.4f} {TOKEN1_SYMBOL} -> {missing_0:.4f} {TOKEN0_SYMBOL} (Auto-balance)",
-                            "tx_base64": tx_base64,
-                            "route": route_display,
-                            "route_steps": route_labels
-                        })
+                # SỬ DỤNG JUPITER ULTRA API MỚI
+                ultra_order = self.get_ultra_order_tx(
+                    input_mint=TOKEN1_MINT,
+                    output_mint=TOKEN0_MINT,
+                    amount_in_lamports=amount_in_lamports,
+                    taker=user_pubkey_str,
+                    slippageBps=slippage_bps
+                )
+                
+                if ultra_order and ultra_order.get("transaction"):
+                    tx_base64 = ultra_order["transaction"]
+                    request_id = ultra_order.get("requestId")
+                    route_display = ultra_order.get("route_plan", "Jupiter Ultra")
+                    price_impact_percent = float(ultra_order.get('priceImpactPct', 0.0))
+
+                    swaps_payload.append({
+                        "type": "SWAP_1_TO_0",
+                        "provider": "JupiterUltra",
+                        "description": f"Swap {amount_in_needed:.4f} {TOKEN1_SYMBOL} -> {missing_0:.4f} {TOKEN0_SYMBOL} (Auto-balance)",
+                        "tx_base64": tx_base64,
+                        "requestId": request_id,
+                        "route": route_display
+                    })
                     
         return swaps_payload, price_impact_percent
 

@@ -214,6 +214,12 @@ class MintingService:
             }
         }
 
+    def execute_ultra_swap(self, signed_tx: str, request_id: str):
+        """
+        Gói lại hàm execute từ Swapper để gọi từ Controller (app.py).
+        """
+        return self.swapper.get_execute_ultra_tx(signed_tx, request_id)
+
 # --- TEST ---
 # if __name__ == "__main__":
 #     RPC_URL = "https://shy-spring-card.solana-mainnet.quiknode.pro/6a97979ed162924bd71e878f5517215efab54766"
