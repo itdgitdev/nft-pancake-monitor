@@ -215,7 +215,8 @@ WS_RPC_URLS = {
     "POL": f"wss://polygon-mainnet.infura.io/ws/v3/{API_KEY_INFURA}"
 }
 
-QUICKNODE_RPC_URL = "https://shy-spring-card.solana-mainnet.quiknode.pro/6a97979ed162924bd71e878f5517215efab54766"
+# QUICKNODE_RPC_URL = "https://shy-spring-card.solana-mainnet.quiknode.pro/6a97979ed162924bd71e878f5517215efab54766"
+QUICKNODE_RPC_URL = "https://skilled-floral-cloud.solana-mainnet.quiknode.pro/402c1b702f042e7d1f82cb14e162efd31084a4e5/"
 JUPITER_API_KEY = "87eef807-0114-49ba-a50c-7ec86337a08d"
 
 ### TOKEN NATIVE ###

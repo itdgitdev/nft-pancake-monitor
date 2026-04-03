@@ -50,7 +50,9 @@ const { Connection, VersionedMessage, VersionedTransaction, clusterApiUrl, Keypa
 //   }
 // }
 
-const RPC_URL = "https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/a2995d002f97f0eb9165a1d8ce906d2ce626aa85/";
+// const RPC_URL = "https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/a2995d002f97f0eb9165a1d8ce906d2ce626aa85/";
+const RPC_URL = "https://skilled-floral-cloud.solana-mainnet.quiknode.pro/402c1b702f042e7d1f82cb14e162efd31084a4e5/";
+
 export async function signAndSend(msg_base64, position_nft_mint_secret) {
     if (!window.solana) throw new Error("❌ Phantom not found");
 
