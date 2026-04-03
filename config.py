@@ -186,7 +186,8 @@ SPL_TOKEN_PROGRAM = Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPx
 PANCAKE_PROGRAM_ID = Pubkey.from_string("HpNfyc2Saw7RKkQd8nEL4khUcuPhQ7WwY1B2qjx8jxFq")
 RAYDIUM_PROGRAM_ID = Pubkey.from_string("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")
 METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
-CLIENT = Client(f"https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/{QUICKNODE_KEY}")
+# CLIENT = Client(f"https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/{QUICKNODE_KEY}")
+CLIENT = Client("https://skilled-floral-cloud.solana-mainnet.quiknode.pro/402c1b702f042e7d1f82cb14e162efd31084a4e5/")
 WSS_URL = f"wss://shy-spring-card.solana-mainnet.quiknode.pro/{WSS_QUICKNODE_KEY}"
 
 HELIUS_CLIENT = Client(f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}")
