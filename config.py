@@ -187,7 +187,7 @@ PANCAKE_PROGRAM_ID = Pubkey.from_string("HpNfyc2Saw7RKkQd8nEL4khUcuPhQ7WwY1B2qjx
 RAYDIUM_PROGRAM_ID = Pubkey.from_string("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK")
 METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
 # CLIENT = Client(f"https://dawn-blissful-pallet.solana-mainnet.quiknode.pro/{QUICKNODE_KEY}")
-CLIENT = Client("https://skilled-floral-cloud.solana-mainnet.quiknode.pro/402c1b702f042e7d1f82cb14e162efd31084a4e5/")
+CLIENT = Client("https://mainnet.helius-rpc.com/?api-key=69ddcec4-b718-41c0-9429-069fd24e3091")
 WSS_URL = f"wss://shy-spring-card.solana-mainnet.quiknode.pro/{WSS_QUICKNODE_KEY}"
 
 HELIUS_CLIENT = Client(f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}")
@@ -196,14 +196,14 @@ MORALIS_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImQ3ZGUwNDc4
 
 # Solana RPC endpoints with Helius and Solana mainnet
 RPC_SOL_ENDPOINTS = [
-    "https://solana-mainnet.g.alchemy.com/v2/objZhkoyHIkTOpSJLSCkC",
-    f"https://mainnet.helius-rpc.com/?api-key={HELIUS_KEY}",
+    "https://mainnet.helius-rpc.com/?api-key=bb4fcdca-d41d-4930-ada1-6490968dabe4",
+    f"https://solana-mainnet.g.alchemy.com/v2/objZhkoyHIkTOpSJLSCkC",
     "https://api.mainnet-beta.solana.com"
 ]
 
 CLIENTS_SOL_ENDPOINTS = [
-    Client("https://solana-mainnet.g.alchemy.com/v2/objZhkoyHIkTOpSJLSCkC"),
     Client("https://mainnet.helius-rpc.com/?api-key=bb4fcdca-d41d-4930-ada1-6490968dabe4"),
+    Client("https://solana-mainnet.g.alchemy.com/v2/objZhkoyHIkTOpSJLSCkC"),
     Client("https://api.mainnet-beta.solana.com")
 ]
 
@@ -217,7 +217,7 @@ WS_RPC_URLS = {
 }
 
 # QUICKNODE_RPC_URL = "https://shy-spring-card.solana-mainnet.quiknode.pro/6a97979ed162924bd71e878f5517215efab54766"
-QUICKNODE_RPC_URL = "https://skilled-floral-cloud.solana-mainnet.quiknode.pro/402c1b702f042e7d1f82cb14e162efd31084a4e5/"
+QUICKNODE_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=69ddcec4-b718-41c0-9429-069fd24e3091"
 JUPITER_API_KEY = "87eef807-0114-49ba-a50c-7ec86337a08d"
 
 ### TOKEN NATIVE ###
