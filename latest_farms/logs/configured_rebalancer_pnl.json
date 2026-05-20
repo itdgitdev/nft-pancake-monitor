@@ -1,0 +1,75 @@
+[
+  {
+    "basis_source": "WALLET_NFT_POSITION_INITIAL_TOTAL",
+    "chain": "BNB",
+    "current_position_value_usd": 5.72,
+    "current_token_id": 6840341,
+    "current_unclaimed_usd": 0.74882355,
+    "current_value_usd": 6.46882355,
+    "gas_cost_native": 8.34658e-05,
+    "gas_cost_usd": 0.05711463,
+    "gross_pnl_usd": 0.49882355,
+    "initial_capital_usd": 5.97,
+    "net_pnl_usd_after_gas": 0.44170892,
+    "pool": "USDT-GENIUS",
+    "root_token_id": 6840242,
+    "status": "Active",
+    "token_id_chain": [
+      6840242,
+      6840341
+    ],
+    "wallet_address": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
+    "wallet_summary_claimed_reference_usd": 0.0,
+    "wallet_summary_pnl_reference_usd": 0.76686282,
+    "warnings": []
+  },
+  {
+    "basis_source": "WALLET_NFT_POSITION_INITIAL_TOTAL",
+    "chain": "BNB",
+    "current_position_value_usd": 0.03,
+    "current_token_id": 6838530,
+    "current_unclaimed_usd": 0.0,
+    "current_value_usd": 0.03,
+    "gas_cost_native": 0.00010249135,
+    "gas_cost_usd": 0.07013358,
+    "gross_pnl_usd": -2.98,
+    "initial_capital_usd": 3.01,
+    "net_pnl_usd_after_gas": -3.05013358,
+    "pool": "USDT-memes",
+    "root_token_id": 6838232,
+    "status": "Burned",
+    "token_id_chain": [
+      6838232,
+      6838530
+    ],
+    "wallet_address": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
+    "wallet_summary_claimed_reference_usd": 0.0,
+    "wallet_summary_pnl_reference_usd": 0.0,
+    "warnings": []
+  },
+  {
+    "basis_source": "WALLET_NFT_POSITION_INITIAL_TOTAL",
+    "chain": "BNB",
+    "current_position_value_usd": 2.37,
+    "current_token_id": 6838701,
+    "current_unclaimed_usd": 0.03337108,
+    "current_value_usd": 2.40337108,
+    "gas_cost_native": 2.754285e-05,
+    "gas_cost_usd": 0.01884724,
+    "gross_pnl_usd": -0.17662892,
+    "initial_capital_usd": 2.58,
+    "net_pnl_usd_after_gas": -0.19547615,
+    "pool": "USDT-memes",
+    "root_token_id": 6838701,
+    "status": "PLANNED",
+    "token_id_chain": [
+      6838701
+    ],
+    "wallet_address": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
+    "wallet_summary_claimed_reference_usd": 0.0,
+    "wallet_summary_pnl_reference_usd": -0.42674444,
+    "warnings": [
+      "rebalance job for token 6838701 has no linked new_token_id"
+    ]
+  }
+]

@@ -1,0 +1,71 @@
+{
+  "version": 2,
+  "dry_run": true,
+  "use_legacy_position_cache": true,
+  "wallets": {
+    "main": {
+      "bot_wallet": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
+      "private_key_env": "PARASITE_BOT_PRIVATE_KEY"
+    }
+  },
+  "pool_defaults": {
+    "dex_type": "pancake_v3_masterchef",
+    "wallet": "main",
+    "slippage_bps": 10,
+    "max_swap_price_impact_pct": 0.5,
+    "execute_burn": false,
+    "auto_bootstrap_start_block": true
+  },
+  "pools": [
+    {
+      "name": "USDT-GENIUS-0.25",
+      "chain": "BNB",
+      "pool_address": "0x1380189b571ce8e1acda5fc7b1bbae55377d409c",
+      "pid": 554,
+      "bootstrap_start_block": null,
+      "seed_token_ids": []
+    },
+    {
+      "name": "USDT-memes-0.25",
+      "chain": "BNB",
+      "pool_address": "0x0932bc183c67f34dbbf52feefe20e4e7aa15260c",
+      "pid": 510,
+      "bootstrap_start_block": null,
+      "seed_token_ids": []
+    },
+    {
+      "name": "USDC-POP-0.25",
+      "chain": "BAS",
+      "pool_address": "0xb5bb9149d9f5aec751e8df607cc6bc961b71571d",
+      "pid": 465,
+      "bootstrap_start_block": null,
+      "seed_token_ids": [],
+      "rebalance_range": {
+        "mode": "price_percent",
+        "lower_percent": -6.0,
+        "upper_percent": 12.0
+      }
+    }
+  ],
+  "discord": {
+    "enabled": true,
+    "webhook_url_env": "CONFIGURED_REBALANCER_DISCORD_WEBHOOK",
+    "pnl_delay_seconds": 120,
+    "notify_pending_if_snapshot_missing": true
+  },
+  "gas_policy": {
+    "BNB": {
+      "mode": "fixed",
+      "gas_price_gwei": 0.05,
+      "max_fee_gwei": 0.08
+    },
+    "BAS": {
+      "mode": "eip1559",
+      "base_fee_multiplier": 2.0,
+      "priority_fee_cap_gwei": 0.01,
+      "swap_priority_fee_cap_gwei": 0.02,
+      "swap_priority_fee_floor_gwei": 0.01,
+      "max_fee_gwei": 0.1
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "last_synced_block": 99353682,
+  "legacy_bootstrap": {
+    "candidate_count": 11,
+    "enabled": true,
+    "last_synced_block": 98005934,
+    "source": "latest_farms\\positions_cache\\positions_cache_BNB.json"
+  },
+  "positions": {},
+  "sync": {
+    "auto_bootstrap_start_block": true,
+    "bootstrap_start_block": null,
+    "cached_block": 99350356,
+    "from_block": 99350357,
+    "historical_skipped": false,
+    "legacy_block": 98005934,
+    "legacy_token_count": 11,
+    "seed_token_count": 0,
+    "source": "module_cache",
+    "start_block": 0,
+    "swept_logs": true,
+    "to_block": 99353682
+  },
+  "token_ids": []
+}

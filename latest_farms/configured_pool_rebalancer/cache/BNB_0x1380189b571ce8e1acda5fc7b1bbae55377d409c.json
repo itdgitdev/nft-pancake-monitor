@@ -1,0 +1,36 @@
+{
+  "last_synced_block": 99353662,
+  "legacy_bootstrap": {
+    "candidate_count": 5,
+    "enabled": true,
+    "last_synced_block": 98005934,
+    "source": "latest_farms\\positions_cache\\positions_cache_BNB.json"
+  },
+  "positions": {
+    "6853845": {
+      "is_staked": true,
+      "liquidity": "102069775162500184464",
+      "owner": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
+      "pid": 554,
+      "tick_lower": -9750,
+      "tick_upper": -8300
+    }
+  },
+  "sync": {
+    "auto_bootstrap_start_block": true,
+    "bootstrap_start_block": null,
+    "cached_block": 99350181,
+    "from_block": 99350182,
+    "historical_skipped": false,
+    "legacy_block": 98005934,
+    "legacy_token_count": 5,
+    "seed_token_count": 0,
+    "source": "module_cache",
+    "start_block": 0,
+    "swept_logs": true,
+    "to_block": 99353662
+  },
+  "token_ids": [
+    6853845
+  ]
+}
