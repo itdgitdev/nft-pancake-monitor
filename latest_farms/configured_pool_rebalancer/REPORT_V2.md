@@ -275,20 +275,13 @@ Field quan trọng:
 
 ### Bước 1: Tạo config riêng
 
-```powershell
-copy latest_farms\configured_pool_rebalancer\sample_config.json my_rebalance_config.json
-```
+Tại file /my_rebalance_config.json thực hiện tùy chỉnh các field:
 
-Sửa các field:
-
-- `bot_wallet`
-- `private_key_env`
-- `pool_address`
-- `chain`
-- `pid`
-- `rebalance_range`
-- `gas_policy`
-- `discord.webhook_url_env` nếu bật Discord
+- `bot_wallet` : ví muốn gán cho bot
+- `pool_address` : pool address muốn bot monitor
+- `chain` : [BNB, BAS, ARB, ETH]
+- `pid`: cần thiết để bot stake position
+- `rebalance_range` : có thể tùy chọn set hoặc không
 
 Không ghi private key hoặc webhook thật vào file JSON.
 
