@@ -296,26 +296,20 @@ Không ghi private key hoặc webhook thật vào file JSON.
 
 Trong PowerShell hiện tại:
 
-```powershell
-$env:PARASITE_BOT_PRIVATE_KEY="your_private_key"
-```
+`$env:PARASITE_BOT_PRIVATE_KEY="your_private_key" `
 
 Nếu bật Discord:
 
-```powershell
-$env:CONFIGURED_REBALANCER_DISCORD_WEBHOOK="your_discord_webhook"
-```
+`$env:CONFIGURED_REBALANCER_DISCORD_WEBHOOK="your_discord_webhook" `
 
 Lưu ý: cách `$env:...` chỉ có hiệu lực trong PowerShell session hiện tại. Nếu chạy bằng Task Scheduler, nên set env ở cấp User/Machine hoặc load secret từ nơi an toàn.
 
-Ví dụ set User env:
+Hãy thêm 2 config này vào file .env trước khi chạy live run hoặc pnl_report:
 
-```powershell
-[Environment]::SetEnvironmentVariable("PARASITE_BOT_PRIVATE_KEY", "your_private_key", "User")
-[Environment]::SetEnvironmentVariable("CONFIGURED_REBALANCER_DISCORD_WEBHOOK", "your_discord_webhook", "User")
 ```
-
-Sau khi set User env, hãy mở PowerShell mới hoặc restart Task Scheduler service nếu cần.
+PARASITE_BOT_PRIVATE_KEY=your_private_key
+CONFIGURED_REBALANCER_DISCORD_WEBHOOK=https://discordapp.com/api/webhooks/1376414684294549564/yxz1viXwF5f4b3EjakEp809E0Bqx62rDvqfc2y3aT8vfuA_1Wp9yIR_ZX05CuT5ayNHN
+```
 
 ### Bước 3: Chạy dry-run trước
 
