@@ -258,8 +258,8 @@ class V3Swapper:
         quotes = []
         kyber_route = self.get_kyber_route(token_in, token_out, amount_in_wei)
         if kyber_route:
-            kyber_tx = self.build_kyber_swap_data(kyber_route, user_address, slippage_bps)
             route_summary = kyber_route.get("routeSummary") or {}
+            kyber_tx = self.build_kyber_swap_data(route_summary, user_address, slippage_bps)
             if kyber_tx and route_summary:
                 quotes.append(self._kyber_quote(kyber_tx, route_summary))
 

@@ -710,9 +710,14 @@ class RebalanceJournal:
                                 AND stake_tx_hash IS NULL
                             )
                             OR (
-                                status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'FAILED')
+                                status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'RECOVERY_REQUIRED', 'FAILED')
                                 AND withdraw_tx_hash IS NOT NULL
                                 AND mint_tx_hash IS NULL
+                            )
+                            OR (
+                                status='RECOVERY_REQUIRED'
+                                AND mint_tx_hash IS NOT NULL
+                                AND new_token_id IS NULL
                             )
                       )
                     ORDER BY updated_at ASC, id ASC
@@ -745,7 +750,7 @@ class RebalanceJournal:
                           AND mint_tx_hash IS NULL
                           AND reserved_token0_address IS NOT NULL
                           AND reserved_token0_raw IS NOT NULL
-                          AND status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'FAILED')
+                          AND status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'RECOVERY_REQUIRED', 'FAILED')
                         UNION ALL
                         SELECT LOWER(reserved_token1_address) AS token_address,
                                CAST(COALESCE(NULLIF(reserved_token1_raw, ''), '0') AS DECIMAL(65,0)) AS reserved_raw
@@ -755,7 +760,7 @@ class RebalanceJournal:
                           AND mint_tx_hash IS NULL
                           AND reserved_token1_address IS NOT NULL
                           AND reserved_token1_raw IS NOT NULL
-                          AND status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'FAILED')
+                          AND status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'RECOVERY_REQUIRED', 'FAILED')
                     ) reservations
                     WHERE token_address IS NOT NULL
                     GROUP BY token_address

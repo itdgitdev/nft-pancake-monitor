@@ -41,7 +41,7 @@ flowchart TD
     T --> U[Lập swap plan]
     U --> V{Cần swap?}
     V -- Có --> W[Gửi swap]
-    W --> X[Xác nhận balance sau swap]
+    W --> X[Xác nhận balance hoặc receipt sau swap]
     X --> Y[Cập nhật reservation sau swap]
     V -- Không --> Z[Lập mint plan]
     Y --> Z
@@ -78,7 +78,7 @@ CLI
               -> withdraw / collect
               -> ghi reservation
               -> swap nếu cần
-              -> xác nhận balance sau swap
+              -> xác nhận balance hoặc receipt sau swap
               -> mint
               -> stake
               -> burn NFT cũ nếu có thể
@@ -133,8 +133,8 @@ Khi position out-of-range và chạy live-run:
 3. Ghi reservation ban đầu bằng đúng lượng token vừa thu hồi.
 4. Lập swap plan nếu tỷ lệ token chưa phù hợp.
 5. Swap nếu quote hợp lệ, price impact không vượt cap và không phải dust.
-6. Sau swap, chờ RPC bắt kịp `receipt_block`, đọc balance nhiều lần và xác nhận token in/out thay đổi hợp lý.
-7. Cập nhật reservation sau swap.
+6. Sau swap, chờ RPC bắt kịp `receipt_block`, đọc balance nhiều lần và/hoặc xác nhận token output bằng receipt log.
+7. Cập nhật reservation sau swap bằng net token movement, trừ token input đã gửi và cộng token output đã nhận.
 8. Lập lại mint plan bằng reservation mới.
 9. Đọc balance trước mint và clamp `amount0_desired/amount1_desired`.
 10. Mint NFT position mới.
@@ -150,9 +150,31 @@ Nếu job lỗi sau withdraw, NFT cũ có thể đã rời MasterChef nên lần
 Reservation ledger lưu lượng token thuộc về từng job:
 
 - Sau withdraw: lưu `reserved_token0_raw`, `reserved_token1_raw`.
-- Sau swap: trừ token input đã swap, cộng token output thực nhận.
+- Sau swap: trừ token input đã gửi, cộng token output thực nhận từ receipt log.
 - Khi recovery: chỉ dùng lượng token đã reserve cho job đó, không dùng toàn bộ balance ví.
 - Trước swap/mint: kiểm tra ví còn đủ cover tổng reservation của tất cả partial jobs trên cùng wallet/token.
+
+Nguồn dữ liệu ưu tiên:
+
+- Withdraw: ưu tiên ERC20 `Transfer` logs trong `withdraw_tx_hash`; balance delta chỉ là fallback/debug.
+- Swap mới: ưu tiên receipt log để xác nhận token output; balance retry dùng để xác nhận RPC đã đồng bộ.
+- Swap cũ đã có trong DB: nếu job có `swap_tx_hash` nhưng thiếu `post_swap` snapshot, worker sẽ reconcile reservation từ swap receipt trước khi quyết định thiếu token hay cần user xử lý thủ công.
+
+Ví dụ swap cũ USDC -> POD:
+
+```text
+Reservation trước swap:
+USDC = 1.979991
+POD  = 0.010000
+
+Receipt swap:
+sent USDC     = 0.571685
+received POD  = 123.456789
+
+Reservation sau reconcile:
+USDC = 1.408306
+POD  = 123.466789
+```
 
 Ví dụ:
 
@@ -169,12 +191,12 @@ Policy recovery hiện tại:
 | Trạng thái job                          | Cách recovery                                                             |
 | ----------------------------------------- | -------------------------------------------------------------------------- |
 | Withdraw xong, chưa có `swap_tx_hash` | Được phép swap nếu planner thấy cần.                                |
-| Đã có `swap_tx_hash` thật           | Không swap thêm, chỉ mint từ reservation hiện tại.                   |
+| Đã có `swap_tx_hash` thật           | Reconcile reservation từ swap receipt nếu cần, sau đó không swap thêm và chỉ mint từ reservation sau swap. |
 | Mint xong nhưng stake lỗi               | Kiểm tra NFT mới thuộc bot wallet và đúng pool, sau đó stake lại. |
 | Thiếu reservation ledger                 | Không tự recovery, yêu cầu xử lý thủ công.                         |
 | Ví không đủ cover tổng reservation   | Không swap/mint, gửi recovery required nếu bật Discord.                |
 
-Điểm quan trọng: nếu user đổi `rebalance_range` sau khi job partial, recovery có thể dùng range hiện tại để mint. Tuy nhiên nếu job đã swap thành công, worker không swap thêm, nên không phát sinh swap lặp cho cùng một job.
+Điểm quan trọng: nếu user đổi `rebalance_range` sau khi job partial, recovery có thể dùng range hiện tại để mint. Tuy nhiên nếu job đã swap thành công, worker sẽ reconcile từ `swap_tx_hash` rồi không swap thêm, nên không phát sinh swap lặp cho cùng một job.
 
 ## 7. Trạng Thái Job
 
@@ -275,13 +297,20 @@ Field quan trọng:
 
 ### Bước 1: Tạo config riêng
 
-Tại file /my_rebalance_config.json thực hiện tùy chỉnh các field:
+```powershell
+copy latest_farms\configured_pool_rebalancer\sample_config.json my_rebalance_config.json
+```
 
-- `bot_wallet` : ví muốn gán cho bot
-- `pool_address` : pool address muốn bot monitor
-- `chain` : [BNB, BAS, ARB, ETH]
-- `pid`: cần thiết để bot stake position
-- `rebalance_range` : có thể tùy chọn set hoặc không
+Sửa các field:
+
+- `bot_wallet`
+- `private_key_env`
+- `pool_address`
+- `chain`
+- `pid`
+- `rebalance_range`
+- `gas_policy`
+- `discord.webhook_url_env` nếu bật Discord
 
 Không ghi private key hoặc webhook thật vào file JSON.
 
@@ -289,20 +318,26 @@ Không ghi private key hoặc webhook thật vào file JSON.
 
 Trong PowerShell hiện tại:
 
-`$env:PARASITE_BOT_PRIVATE_KEY="your_private_key" `
+```powershell
+$env:PARASITE_BOT_PRIVATE_KEY="your_private_key"
+```
 
 Nếu bật Discord:
 
-`$env:CONFIGURED_REBALANCER_DISCORD_WEBHOOK="your_discord_webhook" `
+```powershell
+$env:CONFIGURED_REBALANCER_DISCORD_WEBHOOK="your_discord_webhook"
+```
 
 Lưu ý: cách `$env:...` chỉ có hiệu lực trong PowerShell session hiện tại. Nếu chạy bằng Task Scheduler, nên set env ở cấp User/Machine hoặc load secret từ nơi an toàn.
 
-Hãy thêm 2 config này vào file .env trước khi chạy live run hoặc pnl_report:
+Ví dụ set User env:
 
+```powershell
+[Environment]::SetEnvironmentVariable("PARASITE_BOT_PRIVATE_KEY", "your_private_key", "User")
+[Environment]::SetEnvironmentVariable("CONFIGURED_REBALANCER_DISCORD_WEBHOOK", "your_discord_webhook", "User")
 ```
-PARASITE_BOT_PRIVATE_KEY=your_private_key
-CONFIGURED_REBALANCER_DISCORD_WEBHOOK=https://discordapp.com/api/webhooks/1376414684294549564/yxz1viXwF5f4b3EjakEp809E0Bqx62rDvqfc2y3aT8vfuA_1Wp9yIR_ZX05CuT5ayNHN
-```
+
+Sau khi set User env, hãy mở PowerShell mới hoặc restart Task Scheduler service nếu cần.
 
 ### Bước 3: Chạy dry-run trước
 
@@ -497,6 +532,7 @@ Log checkpoint quan trọng:
 - `stage=post_swap`: balance sau swap, amount planned và reservation sau swap.
 - `stage=pre_mint`: balance trước mint và amount sau clamp.
 - `reserved0` / `reserved1`: lượng token đang được reservation ledger giữ cho job.
+- `recovery swap reservation reconciled`: job cũ đã có `swap_tx_hash`, worker đã sửa reservation từ swap receipt.
 
 Dấu hiệu hệ thống đang chạy ổn:
 
@@ -566,8 +602,21 @@ clamped_amount1_desired=2741410401268718592
 
 - `post_withdraw`: token đã được thu hồi và reservation đã được ghi.
 - `waiting for RPC`: worker đang chờ RPC BASE bắt kịp block chứa swap receipt.
-- `post_swap`: swap đã mined, balance sau swap được xác nhận.
+- `post_swap`: swap đã mined, balance hoặc receipt sau swap được xác nhận.
 - `pre_mint`: amount mint đã được clamp theo reservation/balance thật trước khi mint.
+
+Ví dụ recovery job cũ đã swap nhưng reservation còn stale:
+
+```text
+INFO configured_pool_rebalancer recovery swap reservation reconciled
+pool=USDC-POP-0.25 tokenId=2019344
+tx=0xa59ef68000c4dce36dfb8149404102e21fc76798684b7918b322134e4e5aa380
+old_reserved0=1979991 old_reserved1=10
+sent0=571685 sent1=0 received0=0 received1=123456789
+new_reserved0=1408306 new_reserved1=123456799
+```
+
+Ý nghĩa: job đã swap thành công từ chu kỳ trước. Worker không yêu cầu nạp thêm USDC theo reservation cũ, mà đọc receipt swap để trừ USDC đã gửi và cộng POD đã nhận, sau đó tiếp tục mint từ reservation mới.
 
 Ví dụ Discord PnL notify khi rebalance/indexing đã ổn:
 
@@ -630,6 +679,7 @@ post-swap balance confirmation failed
 zero mint amounts after pre-mint balance clamp
 reservation coverage failed
 missing reservation ledger
+recovery swap reservation reconciled
 ```
 
 ## 10. Lỗi Thường Gặp
@@ -642,9 +692,9 @@ missing reservation ledger
 | Gas too high                    | Gas vượt `max_fee_gwei` hoặc `max_gas_gwei`; cần đổi policy hoặc chờ gas giảm.                                                                                |
 | Swap blocked                    | Quote không có, price impact cao, dust swap, gas/RPC hoặc tx lỗi.                                                                                                      |
 | Swap pending                    | Swap đã gửi nhưng worker chưa nhận receipt; lần sau sẽ kiểm tra lại.                                                                                             |
-| Post-swap balance not confirmed | RPC/balance sau swap chưa ổn định; worker dừng trước mint để tránh mint sai.                                                                                     |
+| Post-swap balance not confirmed | RPC/balance sau swap chưa ổn định; nếu receipt log xác nhận token output thì worker vẫn có thể cập nhật reservation và đi tiếp.                              |
 | Recovery required               | Job partial không thể recovery an toàn; kiểm tra `error`, reservation và balance ví.                                                                               |
 | Missing reservation ledger      | Job cũ tạo trước bản reservation ledger; cần xử lý thủ công hoặc đóng journal nếu đã tạo position mới bằng tay.                                         |
-| Reservation coverage failed     | Ví không đủ token để cover tổng reservation của các partial jobs trên cùng wallet/token.                                                                        |
+| Reservation coverage failed     | Ví không đủ token để cover tổng reservation. Nếu job đã có `swap_tx_hash`, kiểm tra log reconcile; reservation có thể được sửa tự động từ swap receipt. |
 | Missing PnL snapshot            | DB chưa có snapshot NFT mới; chờ indexer cập nhật rồi tạo report lại.                                                                                             |
 | PnL gas warning                 | Kiểm tra tx hash trong journal và bảng `transaction_history_v2_bk`/`transaction_history_v2`; hash có/không có `0x` đều được normalize ở bản hiện tại. |

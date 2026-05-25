@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 import os
 from itertools import count
 
 from web3 import Web3
+from web3.exceptions import TimeExhausted
 
 from .evm import DEFAULT_GAS_POLICIES, get_chain_id, get_gas_params, validate_gas_cap
 from .models import GasPolicy, PoolConfig, TxResult, WorkerConfig
+
+log = logging.getLogger("configured_pool_rebalancer")
 
 
 class TxExecutor:
@@ -51,20 +55,70 @@ class TxExecutor:
                 "chainId": get_chain_id(self.pool.chain),
             }
         )
+        metadata = self._safe_tx_metadata(label, tx, gas_params)
         private_key = os.getenv(self.pool.private_key_env)
         if not private_key:
             raise RuntimeError(f"missing private key env {self.pool.private_key_env}")
         signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+        signed_tx_hash = Web3.keccak(signed.raw_transaction).hex()
+        if not signed_tx_hash.startswith("0x"):
+            signed_tx_hash = "0x" + signed_tx_hash
+        metadata["signed_tx_hash"] = signed_tx_hash
+        log.info(
+            "broadcast %s tx pool=%s chain=%s to=%s value=%s nonce=%s gas=%s "
+            "max_fee_gwei=%.9f priority_fee_gwei=%.9f data_length=%s signed_tx_hash=%s",
+            label,
+            self.pool.name,
+            self.pool.chain,
+            metadata.get("to"),
+            metadata.get("value"),
+            metadata.get("nonce"),
+            metadata.get("gas_limit"),
+            metadata.get("max_fee_per_gas_gwei", 0.0),
+            metadata.get("max_priority_fee_per_gas_gwei", 0.0),
+            metadata.get("data_length"),
+            signed_tx_hash,
+        )
+        try:
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        except Exception as exc:
+            if label != "mint":
+                raise
+            log.warning(
+                "%s tx broadcast returned error after signing pool=%s chain=%s signed_tx_hash=%s error=%s",
+                label,
+                self.pool.name,
+                self.pool.chain,
+                signed_tx_hash,
+                exc,
+            )
+            return TxResult(
+                tx_hash=signed_tx_hash,
+                status="BROADCAST_UNKNOWN",
+                metadata={**metadata, "error": str(exc), "broadcast_error": str(exc)},
+            )
+        tx_hash_hex = tx_hash.hex()
+        if not tx_hash_hex.startswith("0x"):
+            tx_hash_hex = "0x" + tx_hash_hex
+        metadata["broadcast_tx_hash"] = tx_hash_hex
+        try:
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+        except TimeExhausted as exc:
+            if label != "mint":
+                raise
+            return TxResult(
+                tx_hash=tx_hash_hex,
+                status="PENDING",
+                metadata={**metadata, "error": str(exc)},
+            )
         if receipt["status"] != 1:
-            raise RuntimeError(f"{label} reverted: {tx_hash.hex()}")
+            raise RuntimeError(f"{label} reverted: {tx_hash_hex}")
         effective_gas_price = int(receipt.get("effectiveGasPrice") or gas_params["maxFeePerGas"])
         return TxResult(
-            tx_hash=tx_hash.hex(),
+            tx_hash=tx_hash_hex,
             gas_used=int(receipt["gasUsed"]),
             gas_price_gwei=float(Web3.from_wei(effective_gas_price, "gwei")),
-            metadata={"label": label},
+            metadata={**metadata, "receipt_block": int(receipt.get("blockNumber") or 0)},
         )
 
     def gas_policy(self) -> GasPolicy:
@@ -72,3 +126,17 @@ class TxExecutor:
         if self.worker_config and chain in self.worker_config.gas_policies:
             return self.worker_config.gas_policies[chain]
         return DEFAULT_GAS_POLICIES.get(chain) or GasPolicy()
+
+    def _safe_tx_metadata(self, label: str, tx: dict, gas_params: dict) -> dict:
+        return {
+            "label": label,
+            "chain_id": tx.get("chainId"),
+            "nonce": tx.get("nonce"),
+            "gas_limit": tx.get("gas"),
+            "from": tx.get("from"),
+            "to": tx.get("to"),
+            "value": str(tx.get("value") or 0),
+            "data_length": len(str(tx.get("data") or "")),
+            "max_fee_per_gas_gwei": float(Web3.from_wei(gas_params["maxFeePerGas"], "gwei")),
+            "max_priority_fee_per_gas_gwei": float(Web3.from_wei(gas_params["maxPriorityFeePerGas"], "gwei")),
+        }

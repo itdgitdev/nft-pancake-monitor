@@ -7,10 +7,10 @@ from urllib.parse import urlparse
 from typing import Iterable
 
 from web3 import Web3
-from web3.exceptions import TimeExhausted
+from web3.exceptions import TimeExhausted, TransactionNotFound
 from w3multicall.multicall import W3Multicall
 
-from .abi import ERC20_ABI, MASTERCHEF_V3_ABI, MAX_UINT128, MAX_UINT256, NPM_ABI, V3_POOL_ABI
+from .abi import ERC20_ABI, INCREASE_LIQUIDITY_TOPIC, MASTERCHEF_V3_ABI, MAX_UINT128, MAX_UINT256, NPM_ABI, V3_POOL_ABI
 from .models import PoolConfig, PositionSnapshot, Slot0, TokenBalance, TxResult
 from .reward import token_price_usd
 from .tx_executor import TxExecutor
@@ -274,15 +274,93 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         result = self.executor.send(self.npm.functions.mint(params), "mint", gas=700000)
         if result.dry_run:
             return result, None
-        receipt = self.w3.eth.get_transaction_receipt(result.tx_hash)
-        token_id = None
-        for ev in receipt["logs"]:
-            if ev["topics"] and ev["topics"][0].hex().lower().endswith(
-                "3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f"
-            ):
-                token_id = int(ev["topics"][1].hex(), 16)
-                break
+        receipt = self._mint_receipt_from_result(result)
+        if receipt is None:
+            return result, None
+        if int(receipt.get("status", 0)) != 1:
+            result.metadata["error"] = "mint transaction reverted"
+            return result, None
+        token_id = self._new_token_id_from_mint_receipt(receipt)
+        if token_id is None:
+            return result, None
+        if not self._minted_position_matches_plan(token_id, plan):
+            result.metadata["error"] = "mint receipt token does not match requested pool/range"
+            return result, None
+        if result.status in {"BROADCAST_UNKNOWN", "PENDING"}:
+            result.status = "RECOVERED"
+            receipt_hash = self._hex_value(receipt.get("transactionHash"))
+            if self._normalize_tx_hash_for_rpc(receipt_hash):
+                result.tx_hash = receipt_hash
+            effective_gas_price = int(receipt.get("effectiveGasPrice") or 0)
+            result.gas_used = int(receipt.get("gasUsed") or 0)
+            result.gas_price_gwei = (
+                float(Web3.from_wei(effective_gas_price, "gwei")) if effective_gas_price else 0.0
+            )
+            result.metadata["receipt_block"] = int(receipt.get("blockNumber") or 0)
+            result.metadata["recovered_from_receipt"] = True
         return result, token_id
+
+    def _mint_receipt_from_result(self, result: TxResult):
+        candidates = [result.tx_hash]
+        signed_hash = result.metadata.get("signed_tx_hash") if result.metadata else None
+        if signed_hash and signed_hash not in candidates:
+            candidates.append(signed_hash)
+        for candidate in candidates:
+            normalized = self._normalize_tx_hash_for_rpc(candidate)
+            if not normalized:
+                continue
+            try:
+                return self.w3.eth.get_transaction_receipt(normalized)
+            except TransactionNotFound:
+                continue
+            except Exception as exc:
+                log.warning("could not recover mint receipt pool=%s tx=%s: %s", self.pool.name, normalized, exc)
+        return None
+
+    def _new_token_id_from_mint_receipt(self, receipt) -> int | None:
+        topic = INCREASE_LIQUIDITY_TOPIC.lower()
+        for ev in receipt.get("logs", []):
+            topics = ev.get("topics") or []
+            if len(topics) < 2:
+                continue
+            if self._hex_value(topics[0]).lower() != topic:
+                continue
+            try:
+                return int(self._hex_value(topics[1]), 16)
+            except ValueError:
+                return None
+        return None
+
+    def _minted_position_matches_plan(self, token_id: int, plan) -> bool:
+        try:
+            position = self.read_npm_position(int(token_id), owner=self.pool.bot_wallet)
+        except Exception as exc:
+            log.warning("could not validate recovered mint position pool=%s tokenId=%s: %s", self.pool.name, token_id, exc)
+            return False
+        owner = position.owner.lower()
+        if owner not in {self.pool.bot_wallet.lower(), self.masterchef_address.lower()}:
+            log.warning(
+                "recovered mint token owner mismatch pool=%s tokenId=%s owner=%s",
+                self.pool.name,
+                token_id,
+                position.owner,
+            )
+            return False
+        if not self._matches_pool(position.token0, position.token1, position.fee):
+            log.warning("recovered mint token pool mismatch pool=%s tokenId=%s", self.pool.name, token_id)
+            return False
+        if int(position.tick_lower) != int(plan.new_tick_lower) or int(position.tick_upper) != int(plan.new_tick_upper):
+            log.warning(
+                "recovered mint token range mismatch pool=%s tokenId=%s expected=(%s,%s) actual=(%s,%s)",
+                self.pool.name,
+                token_id,
+                plan.new_tick_lower,
+                plan.new_tick_upper,
+                position.tick_lower,
+                position.tick_upper,
+            )
+            return False
+        return int(position.liquidity) > 0
 
     def stake(self, token_id: int) -> TxResult:
         data = self.w3.codec.encode(["uint256"], [int(self.pool.pid or 0)])
@@ -469,6 +547,34 @@ class PancakeV3MasterChefAdapter(DexAdapter):
     def _rpc_label(self, url: str) -> str:
         parsed = urlparse(url)
         return parsed.netloc or "unknown-rpc"
+
+    @staticmethod
+    def _normalize_tx_hash_for_rpc(value: str | None) -> str | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        bare = text[2:] if text.lower().startswith("0x") else text
+        if len(bare) != 64:
+            return None
+        try:
+            int(bare, 16)
+        except ValueError:
+            return None
+        return "0x" + bare.lower()
+
+    @staticmethod
+    def _hex_value(value) -> str:
+        if value is None:
+            return "0x"
+        if isinstance(value, str):
+            text = value
+        elif hasattr(value, "hex"):
+            text = value.hex()
+        else:
+            text = str(value)
+        if text and not text.startswith("0x"):
+            text = "0x" + text
+        return text
 
     def _dust_output_result(self, token_out: str, quote: dict) -> TxResult | None:
         if self.pool.min_swap_output_usd <= 0:

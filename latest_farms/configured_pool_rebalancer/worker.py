@@ -10,7 +10,7 @@ from .adapter import AerodromeGaugeAdapter, PancakeV3MasterChefAdapter
 from .discord_notifier import DiscordNotifier
 from .evm import web3_connection
 from .journal import RebalanceJournal, mysql_advisory_lock
-from .models import DexType, PoolConfig, PositionSnapshot, PositionState, TokenBalance, TxResult, WorkerConfig
+from .models import DexType, PoolConfig, PositionSnapshot, PositionState, RebalancePlan, TokenBalance, TxResult, WorkerConfig
 from .pnl_report import ConfiguredPoolPnlReporter
 from .planner import RebalancePlanner, SwapPlanner
 from .position_index import PositionIndex
@@ -20,6 +20,7 @@ from .v3_math import price_percent_from_tick_delta
 
 
 log = logging.getLogger("configured_pool_rebalancer")
+TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().lower().replace("0x", "")
 
 
 class ConfiguredPoolRebalancer:
@@ -212,8 +213,56 @@ class ConfiguredPoolRebalancer:
                         claimed_reward_usd=reward_update["usd"],
                         claimed_reward_source=reward_update["source"],
                     )
-                recovered0 = max(0, post0.raw - pre0.raw)
-                recovered1 = max(0, post1.raw - pre1.raw)
+                balance_delta0 = max(0, post0.raw - pre0.raw)
+                balance_delta1 = max(0, post1.raw - pre1.raw)
+                receipt_inflows = self._receipt_token_inflows(
+                    w3,
+                    pool,
+                    withdraw_tx.tx_hash,
+                    pool.bot_wallet,
+                )
+                reservation_source = "withdraw_receipt"
+                if receipt_inflows is None or (receipt_inflows[0] <= 0 and receipt_inflows[1] <= 0):
+                    recovered0 = balance_delta0
+                    recovered1 = balance_delta1
+                    reservation_source = "balance_delta_fallback"
+                    log.warning(
+                        "withdraw receipt token inflows unavailable; using balance delta fallback "
+                        "pool=%s tokenId=%s tx=%s delta0=%s delta1=%s",
+                        pool.name,
+                        position.token_id,
+                        withdraw_tx.tx_hash,
+                        balance_delta0,
+                        balance_delta1,
+                    )
+                else:
+                    recovered0, recovered1 = receipt_inflows
+                    if recovered0 != balance_delta0 or recovered1 != balance_delta1:
+                        log.warning(
+                            "withdraw receipt/balance delta mismatch pool=%s tokenId=%s tx=%s "
+                            "receipt0=%s receipt1=%s delta0=%s delta1=%s",
+                            pool.name,
+                            position.token_id,
+                            withdraw_tx.tx_hash,
+                            recovered0,
+                            recovered1,
+                            balance_delta0,
+                            balance_delta1,
+                        )
+                if reservation_source == "balance_delta_fallback" and recovered0 <= 0 and recovered1 <= 0:
+                    reason = (
+                        "withdraw receipt token inflows unavailable and balance delta is zero; "
+                        "manual recovery required"
+                    )
+                    self.journal.mark_status(
+                        pool.chain,
+                        position.token_id,
+                        PositionState.WITHDRAWN_UNBURNED,
+                        error_reason=reason,
+                    )
+                    self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                    self._notify_recovery_required(pool, position.token_id, reason)
+                    return
                 reserved0 = recovered0
                 reserved1 = recovered1
                 self.journal.record_reservation(
@@ -228,7 +277,7 @@ class ConfiguredPoolRebalancer:
                     "rebalance checkpoint pool=%s tokenId=%s stage=post_withdraw "
                     "pre0=%s pre1=%s post_withdraw0=%s post_withdraw1=%s "
                     "recovered_after_withdraw0=%s recovered_after_withdraw1=%s "
-                    "reserved0=%s reserved1=%s",
+                    "reserved0=%s reserved1=%s reservation_source=%s",
                     pool.name,
                     position.token_id,
                     pre0.raw,
@@ -239,6 +288,7 @@ class ConfiguredPoolRebalancer:
                     recovered1,
                     reserved0,
                     reserved1,
+                    reservation_source,
                 )
                 coverage_error = self._reservation_coverage_error(pool, adapter, "post_withdraw")
                 if coverage_error:
@@ -274,7 +324,16 @@ class ConfiguredPoolRebalancer:
                             swap_plan.swap_amount_in,
                             dust_reason,
                         )
-                        swap_plan.swap_amount_in = 0
+                        reason = f"dust swap required before mint; {dust_reason}"
+                        self.journal.mark_status(
+                            pool.chain,
+                            position.token_id,
+                            PositionState.WITHDRAWN_UNBURNED,
+                            error_reason=reason,
+                        )
+                        self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                        self._notify_recovery_required(pool, position.token_id, reason)
+                        return
                     else:
                         swap_tx = adapter.swap(
                             swap_plan.swap_token_in,
@@ -325,6 +384,12 @@ class ConfiguredPoolRebalancer:
                                 "swap",
                                 swap_tx,
                             )
+                            swap_receipt_inflows = self._receipt_token_inflows(
+                                w3,
+                                pool,
+                                swap_tx.tx_hash,
+                                pool.bot_wallet,
+                            )
                             post_swap = self._read_post_swap_balances_with_retry(
                                 w3,
                                 adapter,
@@ -335,16 +400,30 @@ class ConfiguredPoolRebalancer:
                                 swap_tx,
                             )
                             if post_swap is None:
-                                self.journal.mark_status(
-                                    pool.chain,
+                                if not self._swap_receipt_confirms_output(pool, swap_tx, swap_receipt_inflows):
+                                    reason = "post-swap balance and receipt output not confirmed; mint skipped"
+                                    self.journal.mark_status(
+                                        pool.chain,
+                                        position.token_id,
+                                        PositionState.RECOVERY_REQUIRED,
+                                        "swap",
+                                        swap_tx,
+                                        error_reason=reason,
+                                    )
+                                    self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                                    self._notify_recovery_required(pool, position.token_id, reason)
+                                    return
+                                log.warning(
+                                    "post-swap balance confirmation failed but receipt output was verified; "
+                                    "continuing with receipt reservation pool=%s tokenId=%s tx=%s inflows=%s",
+                                    pool.name,
                                     position.token_id,
-                                    PositionState.FAILED,
-                                    "swap",
-                                    swap_tx,
-                                    error_reason="post-swap balance not confirmed after retry; mint skipped",
+                                    swap_tx.tx_hash,
+                                    swap_receipt_inflows,
                                 )
-                                return
-                            post_swap0, post_swap1 = post_swap
+                                post_swap0, post_swap1 = adapter.read_balances(pool.bot_wallet)
+                            else:
+                                post_swap0, post_swap1 = post_swap
                             self.journal.record_balance_snapshot(
                                 pool.chain,
                                 position.token_id,
@@ -352,6 +431,16 @@ class ConfiguredPoolRebalancer:
                                 post_swap0.raw,
                                 post_swap1.raw,
                             )
+                            if swap_receipt_inflows is None or (
+                                swap_receipt_inflows[0] <= 0 and swap_receipt_inflows[1] <= 0
+                            ):
+                                log.warning(
+                                    "swap receipt token inflows unavailable; using balance delta fallback "
+                                    "pool=%s tokenId=%s tx=%s",
+                                    pool.name,
+                                    position.token_id,
+                                    swap_tx.tx_hash,
+                                )
                             reserved0, reserved1 = self._reservation_after_swap(
                                 pool,
                                 reserved0,
@@ -361,6 +450,7 @@ class ConfiguredPoolRebalancer:
                                 post_swap0,
                                 post_swap1,
                                 swap_tx,
+                                swap_receipt_inflows,
                             )
                             self.journal.record_reservation(
                                 pool.chain,
@@ -370,8 +460,8 @@ class ConfiguredPoolRebalancer:
                                 reserved0,
                                 reserved1,
                             )
-                            recovered0 = max(0, post_swap0.raw - pre0.raw)
-                            recovered1 = max(0, post_swap1.raw - pre1.raw)
+                            recovered0 = max(0, int(reserved0))
+                            recovered1 = max(0, int(reserved1))
                             slot_for_mint = adapter.read_slot0()
                             swap_plan = RebalancePlanner().build_plan(
                                 pool,
@@ -406,14 +496,7 @@ class ConfiguredPoolRebalancer:
                 pre_mint0, pre_mint1 = adapter.read_balances(pool.bot_wallet)
                 coverage_error = self._reservation_coverage_error(pool, adapter, "pre_mint")
                 if coverage_error:
-                    self.journal.mark_status(
-                        pool.chain,
-                        position.token_id,
-                        PositionState.WITHDRAWN_UNBURNED,
-                        error_reason=coverage_error,
-                    )
-                    self.journal.mark_recovery_error(pool.chain, position.token_id, coverage_error)
-                    self._notify_recovery_required(pool, position.token_id, coverage_error)
+                    self._mark_manual_recovery(pool, position.token_id, coverage_error)
                     return
                 original_amount0, original_amount1, available0, available1 = self._clamp_plan_to_reservation(
                     swap_plan,
@@ -471,14 +554,21 @@ class ConfiguredPoolRebalancer:
 
                 mint_tx, new_token_id = adapter.mint(swap_plan)
                 if not new_token_id:
+                    reason = (
+                        mint_tx.metadata.get("error")
+                        if mint_tx and mint_tx.metadata
+                        else "mint token id was not parsed"
+                    )
                     self.journal.mark_status(
                         pool.chain,
                         position.token_id,
-                        PositionState.FAILED,
+                        PositionState.RECOVERY_REQUIRED,
                         "mint",
                         mint_tx,
-                        error_reason="mint succeeded but token id was not parsed",
+                        error_reason=f"mint reconciliation required: {reason}",
                     )
+                    self.journal.mark_recovery_error(pool.chain, position.token_id, f"mint reconciliation required: {reason}")
+                    self._notify_recovery_required(pool, position.token_id, f"mint reconciliation required: {reason}")
                     return
                 actual_lower_percent = price_percent_from_tick_delta(
                     swap_plan.new_tick_lower - slot_for_mint.tick
@@ -631,12 +721,19 @@ class ConfiguredPoolRebalancer:
                     action_count += 1
             except Exception as exc:
                 log.exception("partial recovery failed pool=%s tokenId=%s: %s", pool.name, old_token_id, exc)
+                self.journal.mark_status(
+                    pool.chain,
+                    old_token_id,
+                    PositionState.RECOVERY_REQUIRED,
+                    error_reason=f"partial recovery failed: {exc}",
+                )
                 self.journal.mark_recovery_error(pool.chain, old_token_id, f"partial recovery failed: {exc}")
+                self._notify_recovery_required(pool, old_token_id, f"partial recovery failed: {exc}")
                 out.append(
                     {
                         "pool": pool.name,
                         "token_id": old_token_id,
-                        "state": status,
+                        "state": PositionState.RECOVERY_REQUIRED.value,
                         "recovery": "FAILED",
                         "error": str(exc),
                     }
@@ -731,6 +828,9 @@ class ConfiguredPoolRebalancer:
         position = self._position_from_job(pool, job)
         if position is None:
             return self._mark_manual_recovery(pool, old_token_id, "missing old range data for recovery")
+        mint_tx_hash = str(job.get("mint_tx_hash") or "")
+        if self._real_tx_hash(mint_tx_hash):
+            return self._recover_unknown_mint(pool, adapter, job, position, mint_tx_hash)
         reservation = self._reservation_pair_from_job(job, pool)
         if reservation is None:
             return self._mark_manual_recovery(
@@ -743,11 +843,18 @@ class ConfiguredPoolRebalancer:
         if self._real_tx_hash(swap_tx_hash):
             post_swap = self._snapshot_pair_from_job(job, "post_swap", pool)
             if post_swap is None:
-                return self._mark_manual_recovery(
+                reconciled = self._reconcile_existing_swap_reservation(
+                    w3,
                     pool,
-                    old_token_id,
-                    "swap tx exists but post-swap balance snapshot is missing; manual recovery required",
+                    adapter,
+                    position,
+                    swap_tx_hash,
+                    reservation[0],
+                    reservation[1],
                 )
+                if isinstance(reconciled, dict):
+                    return reconciled
+                reservation = reconciled
             return self._resume_mint_from_reservation(
                 w3,
                 pool,
@@ -767,6 +874,143 @@ class ConfiguredPoolRebalancer:
             reservation[1],
             allow_swap=True,
         )
+
+    def _reconcile_existing_swap_reservation(
+        self,
+        w3,
+        pool: PoolConfig,
+        adapter: PancakeV3MasterChefAdapter,
+        position: PositionSnapshot,
+        swap_tx_hash: str,
+        reserved0: int,
+        reserved1: int,
+    ) -> tuple[int, int] | dict:
+        normalized = self._normalize_tx_hash_for_rpc(swap_tx_hash)
+        if not normalized:
+            return self._mark_manual_recovery(pool, position.token_id, "swap tx hash is invalid")
+        try:
+            receipt = w3.eth.get_transaction_receipt(normalized)
+        except Exception:
+            return self._mark_manual_recovery(pool, position.token_id, "swap tx exists but receipt is unavailable")
+        if int(receipt.get("status", 0)) != 1:
+            return self._mark_manual_recovery(pool, position.token_id, "swap tx reverted")
+
+        sent0, sent1, received0, received1 = self._token_movements_from_receipt(receipt, pool, pool.bot_wallet)
+        if sent0 <= 0 and sent1 <= 0 and received0 <= 0 and received1 <= 0:
+            return self._mark_manual_recovery(pool, position.token_id, "swap receipt has no token movement for wallet")
+
+        old_reserved0 = max(0, int(reserved0))
+        old_reserved1 = max(0, int(reserved1))
+        new_reserved0 = max(0, old_reserved0 - int(sent0) + int(received0))
+        new_reserved1 = max(0, old_reserved1 - int(sent1) + int(received1))
+        try:
+            post_swap0, post_swap1 = adapter.read_balances(pool.bot_wallet)
+        except Exception as exc:
+            log.warning(
+                "could not read post-swap snapshot after reservation reconcile pool=%s tokenId=%s tx=%s: %s",
+                pool.name,
+                position.token_id,
+                swap_tx_hash,
+                exc,
+            )
+            return self._mark_manual_recovery(
+                pool,
+                position.token_id,
+                "swap reservation reconciled but post-swap snapshot could not be recorded",
+            )
+        self.journal.record_reservation(
+            pool.chain,
+            position.token_id,
+            pool.token0_address,
+            pool.token1_address,
+            new_reserved0,
+            new_reserved1,
+        )
+        self.journal.record_balance_snapshot(
+            pool.chain,
+            position.token_id,
+            "post_swap",
+            post_swap0.raw,
+            post_swap1.raw,
+        )
+        log.info(
+            "recovery swap reservation reconciled pool=%s tokenId=%s tx=%s "
+            "old_reserved0=%s old_reserved1=%s sent0=%s sent1=%s received0=%s received1=%s "
+            "new_reserved0=%s new_reserved1=%s",
+            pool.name,
+            position.token_id,
+            swap_tx_hash,
+            old_reserved0,
+            old_reserved1,
+            sent0,
+            sent1,
+            received0,
+            received1,
+            new_reserved0,
+            new_reserved1,
+        )
+        return new_reserved0, new_reserved1
+
+    def _recover_unknown_mint(
+        self,
+        pool: PoolConfig,
+        adapter: PancakeV3MasterChefAdapter,
+        job: dict,
+        position: PositionSnapshot,
+        mint_tx_hash: str,
+    ) -> dict:
+        old_token_id = int(job["old_token_id"])
+        new_tick_lower = self._int_metadata(job.get("new_tick_lower"))
+        new_tick_upper = self._int_metadata(job.get("new_tick_upper"))
+        if new_tick_lower is None or new_tick_upper is None:
+            return self._mark_manual_recovery(pool, old_token_id, "mint tx exists but new range is missing")
+        plan = RebalancePlan(
+            old_token_id=old_token_id,
+            current_tick=0,
+            old_tick_lower=position.tick_lower,
+            old_tick_upper=position.tick_upper,
+            new_tick_lower=new_tick_lower,
+            new_tick_upper=new_tick_upper,
+            amount0_desired=self._int_metadata(job.get("amount0_desired")) or 0,
+            amount1_desired=self._int_metadata(job.get("amount1_desired")) or 0,
+        )
+        receipt = adapter._mint_receipt_from_result(
+            TxResult(tx_hash=mint_tx_hash, status="BROADCAST_UNKNOWN", metadata={"label": "mint"})
+        )
+        if receipt is None:
+            return self._mark_manual_recovery(pool, old_token_id, "mint tx exists but receipt is not available")
+        if int(receipt.get("status", 0)) != 1:
+            return self._mark_manual_recovery(pool, old_token_id, "mint tx exists but transaction reverted")
+        new_token_id = adapter._new_token_id_from_mint_receipt(receipt)
+        if new_token_id is None:
+            return self._mark_manual_recovery(pool, old_token_id, "mint tx receipt has no IncreaseLiquidity token id")
+        if not adapter._minted_position_matches_plan(new_token_id, plan):
+            return self._mark_manual_recovery(pool, old_token_id, "minted token does not match recovery job")
+
+        effective_gas_price = int(receipt.get("effectiveGasPrice") or 0)
+        mint_tx = TxResult(
+            tx_hash=self._hex_value(receipt.get("transactionHash")),
+            status="RECOVERED",
+            gas_used=int(receipt.get("gasUsed") or 0),
+            gas_price_gwei=float(Web3.from_wei(effective_gas_price, "gwei")) if effective_gas_price else 0.0,
+            metadata={
+                "label": "mint",
+                "recovered_from_receipt": True,
+                "receipt_block": int(receipt.get("blockNumber") or 0),
+            },
+        )
+        self.journal.mark_status(
+            pool.chain,
+            old_token_id,
+            PositionState.MINTED_UNSTAKED,
+            "mint",
+            mint_tx,
+            new_token_id,
+            mint_tick_lower=new_tick_lower,
+            mint_tick_upper=new_tick_upper,
+        )
+        repaired_job = {**job, "new_token_id": new_token_id, "status": PositionState.MINTED_UNSTAKED.value}
+        return self._recover_minted_unstaked(pool, adapter, repaired_job)
 
     def _resume_mint_from_reservation(
         self,
@@ -829,7 +1073,11 @@ class ConfiguredPoolRebalancer:
                     swap_plan.swap_amount_in,
                     dust_reason,
                 )
-                swap_plan.swap_amount_in = 0
+                return self._mark_manual_recovery(
+                    pool,
+                    position.token_id,
+                    f"dust swap required before mint; {dust_reason}",
+                )
             if swap_plan.swap_amount_in > 0:
                 swap_tx = adapter.swap(
                     swap_plan.swap_token_in,
@@ -891,6 +1139,12 @@ class ConfiguredPoolRebalancer:
                         "swap",
                         swap_tx,
                     )
+                    swap_receipt_inflows = self._receipt_token_inflows(
+                        w3,
+                        pool,
+                        swap_tx.tx_hash,
+                        pool.bot_wallet,
+                    )
                     post_swap = self._read_post_swap_balances_with_retry(
                         w3,
                         adapter,
@@ -901,22 +1155,23 @@ class ConfiguredPoolRebalancer:
                         swap_tx,
                     )
                     if post_swap is None:
-                        self.journal.mark_status(
-                            pool.chain,
+                        if not self._swap_receipt_confirms_output(pool, swap_tx, swap_receipt_inflows):
+                            return self._mark_manual_recovery(
+                                pool,
+                                position.token_id,
+                                "recovery post-swap balance and receipt output not confirmed; mint skipped",
+                            )
+                        log.warning(
+                            "recovery post-swap balance confirmation failed but receipt output was verified; "
+                            "continuing with receipt reservation pool=%s tokenId=%s tx=%s inflows=%s",
+                            pool.name,
                             position.token_id,
-                            PositionState.FAILED,
-                            "swap",
-                            swap_tx,
-                            error_reason="recovery post-swap balance not confirmed after retry; mint skipped",
+                            swap_tx.tx_hash,
+                            swap_receipt_inflows,
                         )
-                        return {
-                            "pool": pool.name,
-                            "token_id": position.token_id,
-                            "state": PositionState.FAILED.value,
-                            "recovery": "POST_SWAP_BALANCE_UNCONFIRMED",
-                            "action_taken": True,
-                        }
-                    post_swap0, post_swap1 = post_swap
+                        post_swap0, post_swap1 = adapter.read_balances(pool.bot_wallet)
+                    else:
+                        post_swap0, post_swap1 = post_swap
                     self.journal.record_balance_snapshot(
                         pool.chain,
                         position.token_id,
@@ -924,6 +1179,16 @@ class ConfiguredPoolRebalancer:
                         post_swap0.raw,
                         post_swap1.raw,
                     )
+                    if swap_receipt_inflows is None or (
+                        swap_receipt_inflows[0] <= 0 and swap_receipt_inflows[1] <= 0
+                    ):
+                        log.warning(
+                            "recovery swap receipt token inflows unavailable; using balance delta fallback "
+                            "pool=%s tokenId=%s tx=%s",
+                            pool.name,
+                            position.token_id,
+                            swap_tx.tx_hash,
+                        )
                     reserved0, reserved1 = self._reservation_after_swap(
                         pool,
                         reserved0,
@@ -933,6 +1198,7 @@ class ConfiguredPoolRebalancer:
                         post_swap0,
                         post_swap1,
                         swap_tx,
+                        swap_receipt_inflows,
                     )
                     self.journal.record_reservation(
                         pool.chain,
@@ -1014,20 +1280,32 @@ class ConfiguredPoolRebalancer:
 
         mint_tx, new_token_id = adapter.mint(swap_plan)
         if not new_token_id:
+            reason = (
+                mint_tx.metadata.get("error")
+                if mint_tx and mint_tx.metadata
+                else "recovery mint token id was not parsed"
+            )
             self.journal.mark_status(
                 pool.chain,
                 position.token_id,
-                PositionState.FAILED,
+                PositionState.RECOVERY_REQUIRED,
                 "mint",
                 mint_tx,
-                error_reason="recovery mint succeeded but token id was not parsed",
+                error_reason=f"recovery mint reconciliation required: {reason}",
             )
+            self.journal.mark_recovery_error(
+                pool.chain,
+                position.token_id,
+                f"recovery mint reconciliation required: {reason}",
+            )
+            self._notify_recovery_required(pool, position.token_id, f"recovery mint reconciliation required: {reason}")
             return {
                 "pool": pool.name,
                 "token_id": position.token_id,
-                "state": PositionState.FAILED.value,
-                "recovery": "MINT_TOKEN_ID_MISSING",
+                "state": PositionState.RECOVERY_REQUIRED.value,
+                "recovery": "MINT_RECONCILIATION_REQUIRED",
                 "action_taken": True,
+                "error": f"recovery mint reconciliation required: {reason}",
             }
         actual_lower_percent = price_percent_from_tick_delta(swap_plan.new_tick_lower - slot_for_mint.tick)
         actual_upper_percent = price_percent_from_tick_delta(swap_plan.new_tick_upper - slot_for_mint.tick)
@@ -1093,12 +1371,18 @@ class ConfiguredPoolRebalancer:
         }
 
     def _mark_manual_recovery(self, pool: PoolConfig, old_token_id: int, reason: str) -> dict:
+        self.journal.mark_status(
+            pool.chain,
+            old_token_id,
+            PositionState.RECOVERY_REQUIRED,
+            error_reason=reason,
+        )
         self.journal.mark_recovery_error(pool.chain, old_token_id, reason)
         self._notify_recovery_required(pool, old_token_id, reason)
         return {
             "pool": pool.name,
             "token_id": old_token_id,
-            "state": "RECOVERY_REQUIRED",
+            "state": PositionState.RECOVERY_REQUIRED.value,
             "recovery": "MANUAL_REQUIRED",
             "error": reason,
         }
@@ -1205,7 +1489,133 @@ class ConfiguredPoolRebalancer:
 
     @staticmethod
     def _real_tx_hash(value: str | None) -> bool:
-        return bool(value and str(value).startswith("0x") and len(str(value)) == 66)
+        return ConfiguredPoolRebalancer._normalize_tx_hash_for_rpc(value) is not None
+
+    def _receipt_token_inflows(
+        self,
+        w3,
+        pool: PoolConfig,
+        tx_hash: str | None,
+        wallet: str,
+    ) -> tuple[int, int] | None:
+        normalized = self._normalize_tx_hash_for_rpc(tx_hash)
+        if not normalized:
+            return None
+        try:
+            receipt = w3.eth.get_transaction_receipt(normalized)
+        except Exception as exc:
+            log.warning("could not fetch receipt for reservation tx=%s pool=%s: %s", tx_hash, pool.name, exc)
+            return None
+        return self._token_inflows_from_receipt(receipt, pool, wallet)
+
+    def _token_inflows_from_receipt(self, receipt, pool: PoolConfig, wallet: str) -> tuple[int, int]:
+        token0 = str(pool.token0_address).lower()
+        token1 = str(pool.token1_address).lower()
+        wallet_hex = str(wallet).lower().replace("0x", "")
+        amount0 = 0
+        amount1 = 0
+        for event in receipt.get("logs", []):
+            address = str(event.get("address") or "").lower()
+            if address not in {token0, token1}:
+                continue
+            topics = event.get("topics") or []
+            if len(topics) < 3:
+                continue
+            if self._hex_value(topics[0]).lower() != TRANSFER_TOPIC:
+                continue
+            to_topic = self._hex_value(topics[2]).lower().replace("0x", "")
+            if not to_topic.endswith(wallet_hex):
+                continue
+            raw_value = self._hex_value(event.get("data"))
+            try:
+                value = int(raw_value, 16) if raw_value not in {"", "0x"} else 0
+            except ValueError:
+                continue
+            if address == token0:
+                amount0 += max(0, value)
+            elif address == token1:
+                amount1 += max(0, value)
+        return amount0, amount1
+
+    def _token_movements_from_receipt(self, receipt, pool: PoolConfig, wallet: str) -> tuple[int, int, int, int]:
+        token0 = str(pool.token0_address).lower()
+        token1 = str(pool.token1_address).lower()
+        wallet_hex = str(wallet).lower().replace("0x", "")
+        sent0 = sent1 = received0 = received1 = 0
+        for event in receipt.get("logs", []):
+            address = str(event.get("address") or "").lower()
+            if address not in {token0, token1}:
+                continue
+            topics = event.get("topics") or []
+            if len(topics) < 3:
+                continue
+            if self._hex_value(topics[0]).lower() != TRANSFER_TOPIC:
+                continue
+            from_topic = self._hex_value(topics[1]).lower().replace("0x", "")
+            to_topic = self._hex_value(topics[2]).lower().replace("0x", "")
+            raw_value = self._hex_value(event.get("data"))
+            try:
+                value = int(raw_value, 16) if raw_value not in {"", "0x"} else 0
+            except ValueError:
+                continue
+            if value <= 0:
+                continue
+            if address == token0:
+                if from_topic.endswith(wallet_hex):
+                    sent0 += value
+                if to_topic.endswith(wallet_hex):
+                    received0 += value
+            elif address == token1:
+                if from_topic.endswith(wallet_hex):
+                    sent1 += value
+                if to_topic.endswith(wallet_hex):
+                    received1 += value
+        return sent0, sent1, received0, received1
+
+    def _swap_receipt_confirms_output(
+        self,
+        pool: PoolConfig,
+        swap_tx: TxResult,
+        receipt_inflows: tuple[int, int] | None,
+    ) -> bool:
+        if not receipt_inflows:
+            return False
+        token_out = str((swap_tx.metadata or {}).get("token_out") or "").lower()
+        token0 = str(pool.token0_address).lower()
+        token1 = str(pool.token1_address).lower()
+        if token_out == token0:
+            return int(receipt_inflows[0]) > 0
+        if token_out == token1:
+            return int(receipt_inflows[1]) > 0
+        return False
+
+    @staticmethod
+    def _normalize_tx_hash_for_rpc(value: str | None) -> str | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        bare = text[2:] if text.lower().startswith("0x") else text
+        if len(bare) != 64:
+            return None
+        try:
+            int(bare, 16)
+        except ValueError:
+            return None
+        return "0x" + bare.lower()
+
+    @staticmethod
+    def _hex_value(value) -> str:
+        if value is None:
+            return "0x"
+        if isinstance(value, str):
+            text = value
+        elif hasattr(value, "hex"):
+            text = value.hex()
+        else:
+            text = str(value)
+        if text and not text.startswith("0x"):
+            text = "0x" + text
+        return text
 
     def _reservation_after_swap(
         self,
@@ -1217,6 +1627,7 @@ class ConfiguredPoolRebalancer:
         after0: TokenBalance,
         after1: TokenBalance,
         swap_tx: TxResult,
+        receipt_inflows: tuple[int, int] | None = None,
     ) -> tuple[int, int]:
         metadata = swap_tx.metadata or {}
         token_in = str(metadata.get("token_in") or "").lower()
@@ -1234,10 +1645,16 @@ class ConfiguredPoolRebalancer:
             spent = amount_in or max(0, int(before1.raw) - int(after1.raw))
             out1 = max(0, out1 - min(out1, int(spent)))
 
+        receipt0 = receipt1 = 0
+        if receipt_inflows is not None:
+            receipt0, receipt1 = receipt_inflows
+
         if token_out == token0:
-            out0 += max(0, int(after0.raw) - int(before0.raw))
+            received = int(receipt0) if receipt0 > 0 else max(0, int(after0.raw) - int(before0.raw))
+            out0 += received
         elif token_out == token1:
-            out1 += max(0, int(after1.raw) - int(before1.raw))
+            received = int(receipt1) if receipt1 > 0 else max(0, int(after1.raw) - int(before1.raw))
+            out1 += received
 
         return out0, out1
 
