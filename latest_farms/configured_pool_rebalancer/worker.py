@@ -888,9 +888,8 @@ class ConfiguredPoolRebalancer:
         normalized = self._normalize_tx_hash_for_rpc(swap_tx_hash)
         if not normalized:
             return self._mark_manual_recovery(pool, position.token_id, "swap tx hash is invalid")
-        try:
-            receipt = w3.eth.get_transaction_receipt(normalized)
-        except Exception:
+        receipt = self._fetch_receipt_with_rpc_fallback(w3, pool, position.token_id, normalized)
+        if receipt is None:
             return self._mark_manual_recovery(pool, position.token_id, "swap tx exists but receipt is unavailable")
         if int(receipt.get("status", 0)) != 1:
             return self._mark_manual_recovery(pool, position.token_id, "swap tx reverted")
@@ -950,6 +949,86 @@ class ConfiguredPoolRebalancer:
             new_reserved1,
         )
         return new_reserved0, new_reserved1
+
+    def _fetch_receipt_with_rpc_fallback(self, w3, pool: PoolConfig, token_id: int, tx_hash: str):
+        attempts = [("primary", w3)]
+        for label, url in self._receipt_rpc_urls(pool):
+            attempts.append((label, self._web3_for_rpc(pool, url)))
+
+        last_error = None
+        for rpc_label, candidate_w3 in attempts:
+            try:
+                receipt = candidate_w3.eth.get_transaction_receipt(tx_hash)
+                if rpc_label != "primary":
+                    log.info(
+                        "recovered swap receipt via rpc fallback pool=%s tokenId=%s tx=%s rpc=%s",
+                        pool.name,
+                        token_id,
+                        tx_hash,
+                        rpc_label,
+                    )
+                return receipt
+            except Exception as exc:
+                last_error = exc
+                log.warning(
+                    "swap receipt lookup failed pool=%s tokenId=%s tx=%s rpc=%s error=%s",
+                    pool.name,
+                    token_id,
+                    tx_hash,
+                    rpc_label,
+                    exc,
+                )
+        log.warning(
+            "swap receipt lookup failed on all rpc attempts pool=%s tokenId=%s tx=%s attempts=%s last_error=%s",
+            pool.name,
+            token_id,
+            tx_hash,
+            len(attempts),
+            last_error,
+        )
+        return None
+
+    def _receipt_rpc_urls(self, pool: PoolConfig) -> list[tuple[str, str]]:
+        try:
+            from latest_farms.config import RPC_BACKUP_LIST, RPC_URLS_2
+        except ImportError:  # pragma: no cover
+            from config import RPC_BACKUP_LIST, RPC_URLS_2
+
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        primary = RPC_URLS_2.get(pool.chain)
+        if primary:
+            seen.add(primary)
+            out.append((f"configured:{self._rpc_label(primary)}", primary))
+        for index, url in enumerate(RPC_BACKUP_LIST.get(pool.chain, []), start=1):
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append((f"backup-{index}:{self._rpc_label(url)}", url))
+        return out
+
+    def _web3_for_rpc(self, pool: PoolConfig, url: str) -> Web3:
+        candidate = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 30}))
+        if pool.chain.upper() == "BNB":
+            try:
+                from web3.middleware import ExtraDataToPOAMiddleware
+
+                candidate.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            except ImportError:
+                from web3.middleware import geth_poa_middleware
+
+                candidate.middleware_onion.inject(geth_poa_middleware, layer=0)
+        return candidate
+
+    @staticmethod
+    def _rpc_label(url: str) -> str:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            return parsed.netloc or "unknown-rpc"
+        except Exception:
+            return "unknown-rpc"
 
     def _recover_unknown_mint(
         self,
