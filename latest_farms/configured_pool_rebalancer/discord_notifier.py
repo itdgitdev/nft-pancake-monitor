@@ -123,3 +123,29 @@ class DiscordNotifier:
                 "Manual review is required before this job can be closed or resumed.",
             ]
         )
+
+    def inactive_farm_message(
+        self,
+        pool_name: str,
+        chain: str,
+        wallet: str,
+        pid: int,
+        alloc_point: int,
+        token_ids: list[int],
+    ) -> str:
+        nft_text = ", ".join(str(token_id) for token_id in token_ids[:10]) or "N/A"
+        if len(token_ids) > 10:
+            nft_text = f"{nft_text}, ... (+{len(token_ids) - 10} more)"
+        return "\n".join(
+            [
+                "**Configured Rebalancer Farm Inactive**",
+                f"Pool: `{pool_name}` | Chain: `{chain}`",
+                f"Wallet: `{wallet}`",
+                f"PID: `{pid}`",
+                f"allocPoint: `{alloc_point}`",
+                f"Staked NFTs: `{nft_text}`",
+                "",
+                "Farm reward appears inactive. Worker will keep normal rebalance behavior for fee optimization.",
+                "Withdraw manually if you no longer want to keep this LP.",
+            ]
+        )

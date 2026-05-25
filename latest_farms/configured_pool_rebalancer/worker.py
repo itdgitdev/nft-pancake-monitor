@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
+from pathlib import Path
 
 from web3 import Web3
 from web3.exceptions import TransactionNotFound
@@ -62,6 +64,7 @@ class ConfiguredPoolRebalancer:
 
         recovery_results = self._recover_partial_jobs(w3, pool, adapter)
         positions = self.index.refresh(w3, pool, adapter)
+        self._notify_inactive_farm_if_needed(pool, adapter, positions)
         slot0 = adapter.read_slot0()
         out: list[dict] = list(recovery_results)
         jobs_started = sum(1 for item in recovery_results if item.get("action_taken"))
@@ -1484,6 +1487,103 @@ class ConfiguredPoolRebalancer:
             self.journal.mark_recovery_notified(pool.chain, old_token_id)
         except Exception as exc:
             log.warning("discord recovery notify failed for %s tokenId=%s: %s", pool.name, old_token_id, exc)
+
+    def _notify_inactive_farm_if_needed(
+        self,
+        pool: PoolConfig,
+        adapter: PancakeV3MasterChefAdapter,
+        positions: dict[int, PositionSnapshot],
+    ) -> None:
+        if self.config.dry_run or not self.notifier.enabled():
+            return
+        if pool.pid is None or not isinstance(adapter, PancakeV3MasterChefAdapter):
+            return
+        alloc_point = adapter.read_farm_alloc_point()
+        if alloc_point is None:
+            return
+        key = self._inactive_farm_cache_key(pool)
+        if alloc_point > 0:
+            self._clear_inactive_farm_notified(key)
+            return
+        if not positions or self._inactive_farm_already_notified(key):
+            return
+        token_ids = sorted(int(token_id) for token_id in positions)
+        try:
+            self.notifier.send(
+                self.notifier.inactive_farm_message(
+                    pool.name,
+                    pool.chain,
+                    pool.bot_wallet,
+                    int(pool.pid),
+                    int(alloc_point),
+                    token_ids,
+                )
+            )
+            self._mark_inactive_farm_notified(key, pool, alloc_point, token_ids)
+        except Exception as exc:
+            log.warning("discord inactive farm notify failed for %s pid=%s: %s", pool.name, pool.pid, exc)
+
+    def _inactive_farm_cache_path(self) -> Path:
+        return Path(self.config.cache_dir) / "inactive_farm_notifications.json"
+
+    def _inactive_farm_cache_key(self, pool: PoolConfig) -> str:
+        return ":".join(
+            [
+                str(pool.chain).upper(),
+                str(pool.pool_address).lower(),
+                str(pool.pid),
+                str(pool.bot_wallet).lower(),
+            ]
+        )
+
+    def _load_inactive_farm_cache(self) -> dict:
+        path = self._inactive_farm_cache_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("could not read inactive farm notify cache %s: %s", path, exc)
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_inactive_farm_cache(self, data: dict) -> None:
+        path = self._inactive_farm_cache_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError as exc:
+            log.warning("could not write inactive farm notify cache %s: %s", path, exc)
+
+    def _inactive_farm_already_notified(self, key: str) -> bool:
+        return key in self._load_inactive_farm_cache()
+
+    def _mark_inactive_farm_notified(
+        self,
+        key: str,
+        pool: PoolConfig,
+        alloc_point: int,
+        token_ids: list[int],
+    ) -> None:
+        data = self._load_inactive_farm_cache()
+        data[key] = {
+            "chain": pool.chain,
+            "pool": pool.name,
+            "pool_address": pool.pool_address,
+            "pid": pool.pid,
+            "wallet": pool.bot_wallet,
+            "alloc_point": int(alloc_point),
+            "token_ids": token_ids,
+            "notified_at": int(time.time()),
+        }
+        self._save_inactive_farm_cache(data)
+
+    def _clear_inactive_farm_notified(self, key: str) -> None:
+        data = self._load_inactive_farm_cache()
+        if key not in data:
+            return
+        del data[key]
+        self._save_inactive_farm_cache(data)
 
     def _position_from_job(self, pool: PoolConfig, job: dict) -> PositionSnapshot | None:
         if job.get("old_tick_lower") is None or job.get("old_tick_upper") is None:

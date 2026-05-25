@@ -157,6 +157,21 @@ NPM_ABI = [
 
 MASTERCHEF_V3_ABI = [
     {
+        "name": "poolInfo",
+        "inputs": [{"name": "pid", "type": "uint256"}],
+        "outputs": [
+            {"name": "allocPoint", "type": "uint256"},
+            {"name": "v3Pool", "type": "address"},
+            {"name": "token0", "type": "address"},
+            {"name": "token1", "type": "address"},
+            {"name": "fee", "type": "uint24"},
+            {"name": "totalLiquidity", "type": "uint256"},
+            {"name": "totalBoostLiquidity", "type": "uint256"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
         "name": "userPositionInfos",
         "inputs": [{"name": "tokenId", "type": "uint256"}],
         "outputs": [

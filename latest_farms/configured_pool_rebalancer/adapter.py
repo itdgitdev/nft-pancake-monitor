@@ -73,6 +73,20 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         res = pool_contract.functions.slot0().call()
         return Slot0(sqrt_price_x96=int(res[0]), tick=int(res[1]))
 
+    def read_farm_alloc_point(self) -> int | None:
+        if self.pool.pid is None:
+            return None
+        try:
+            info = self.masterchef.functions.poolInfo(int(self.pool.pid)).call()
+        except Exception as exc:
+            log.warning("could not read farm allocPoint pool=%s pid=%s: %s", self.pool.name, self.pool.pid, exc)
+            return None
+        try:
+            return int(info[0])
+        except (IndexError, TypeError, ValueError) as exc:
+            log.warning("invalid farm poolInfo response pool=%s pid=%s: %s", self.pool.name, self.pool.pid, exc)
+            return None
+
     def read_balances(self, wallet: str) -> tuple[TokenBalance, TokenBalance]:
         token0 = self._erc20(self.pool.token0_address)
         token1 = self._erc20(self.pool.token1_address)
