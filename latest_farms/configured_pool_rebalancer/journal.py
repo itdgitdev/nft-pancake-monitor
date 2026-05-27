@@ -8,6 +8,7 @@ from typing import Iterator
 import mysql.connector
 
 from .models import PositionState, RebalancePlan, TxResult
+from .position_cache_snapshot import migrate_position_cache_snapshot_table
 
 log = logging.getLogger("configured_pool_rebalancer")
 
@@ -68,6 +69,9 @@ class RebalanceJournal:
                 ("discord_pnl_notified_at", "DATETIME NULL"),
                 ("discord_pending_notified_at", "DATETIME NULL"),
                 ("discord_notify_error", "VARCHAR(500) NULL"),
+                ("discord_partial_notified_at", "DATETIME NULL"),
+                ("discord_partial_notify_key", "VARCHAR(180) NULL"),
+                ("discord_partial_notify_error", "VARCHAR(500) NULL"),
                 ("pre_balance0_raw", "VARCHAR(80) NULL"),
                 ("pre_balance1_raw", "VARCHAR(80) NULL"),
                 ("post_withdraw_balance0_raw", "VARCHAR(80) NULL"),
@@ -84,6 +88,7 @@ class RebalanceJournal:
                 ("recovery_notified_at", "DATETIME NULL"),
             ]:
                 self._add_column_if_missing(cursor, "configured_rebalance_jobs", column_name, column_def)
+            migrate_position_cache_snapshot_table(cursor)
             conn.commit()
         finally:
             cursor.close()
@@ -574,6 +579,84 @@ class RebalanceJournal:
 
     def mark_discord_pending_notified(self, chain: str, old_token_id: int) -> None:
         self._mark_discord_column(chain, old_token_id, "discord_pending_notified_at")
+
+    def partial_already_notified(self, chain: str, old_token_id: int, notify_key: str) -> bool:
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            try:
+                cursor.execute(
+                    """
+                    SELECT discord_partial_notified_at, discord_partial_notify_key
+                    FROM configured_rebalance_jobs
+                    WHERE chain=%s AND old_token_id=%s
+                    """,
+                    (chain, int(old_token_id)),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return False
+                notified_at = row[0] if isinstance(row, tuple) else row.get("discord_partial_notified_at")
+                saved_key = row[1] if isinstance(row, tuple) else row.get("discord_partial_notify_key")
+                return bool(notified_at and saved_key == notify_key[:180])
+            except mysql.connector.Error as exc:
+                if exc.errno in (1054, 1146):
+                    return False
+                raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def mark_discord_partial_notified(self, chain: str, old_token_id: int, notify_key: str) -> None:
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            try:
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                cursor.execute(
+                    """
+                    UPDATE configured_rebalance_jobs
+                    SET discord_partial_notified_at=%s,
+                        discord_partial_notify_key=%s,
+                        discord_partial_notify_error=NULL,
+                        updated_at=%s
+                    WHERE chain=%s AND old_token_id=%s
+                    """,
+                    (now, notify_key[:180], now, chain, int(old_token_id)),
+                )
+                conn.commit()
+            except mysql.connector.Error as exc:
+                if exc.errno != 1054:
+                    raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def mark_discord_partial_error(self, chain: str, old_token_id: int, error: str) -> None:
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            try:
+                cursor.execute(
+                    """
+                    UPDATE configured_rebalance_jobs
+                    SET discord_partial_notify_error=%s, updated_at=%s
+                    WHERE chain=%s AND old_token_id=%s
+                    """,
+                    (
+                        error[:500],
+                        datetime.now(timezone.utc).replace(tzinfo=None),
+                        chain,
+                        int(old_token_id),
+                    ),
+                )
+                conn.commit()
+            except mysql.connector.Error as exc:
+                if exc.errno != 1054:
+                    raise
+        finally:
+            cursor.close()
+            conn.close()
 
     def mark_discord_error(self, chain: str, old_token_id: int, error: str) -> None:
         conn = get_connection()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 from urllib.parse import urlparse
 from typing import Iterable
 
@@ -11,12 +12,25 @@ from web3.exceptions import TimeExhausted, TransactionNotFound
 from w3multicall.multicall import W3Multicall
 
 from .abi import ERC20_ABI, INCREASE_LIQUIDITY_TOPIC, MASTERCHEF_V3_ABI, MAX_UINT128, MAX_UINT256, NPM_ABI, V3_POOL_ABI
+from .logging_utils import log_block, pool_context
 from .models import PoolConfig, PositionSnapshot, Slot0, TokenBalance, TxResult
 from .reward import token_price_usd
 from .tx_executor import TxExecutor
 from .v3_math import amounts_for_liquidity
 
 log = logging.getLogger("configured_pool_rebalancer")
+
+
+@dataclass(frozen=True)
+class MintValidationResult:
+    status: str
+    reason: str | None = None
+    position: PositionSnapshot | None = None
+    rpc_label: str = "primary"
+
+    @property
+    def can_stake(self) -> bool:
+        return self.status in {"VALID", "VALID_WITH_RANGE_WARNING"}
 
 
 try:
@@ -207,7 +221,25 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         spender_cs = Web3.to_checksum_address(spender)
         allowance = int(token_contract.functions.allowance(wallet, spender_cs).call())
         if allowance >= amount:
+            log.info(
+                "approve skipped pool=%s chain=%s token=%s spender=%s required=%s allowance=%s",
+                self.pool.name,
+                self.pool.chain,
+                Web3.to_checksum_address(token),
+                spender_cs,
+                amount,
+                allowance,
+            )
             return None
+        log.info(
+            "approve required pool=%s chain=%s token=%s spender=%s required=%s allowance=%s",
+            self.pool.name,
+            self.pool.chain,
+            Web3.to_checksum_address(token),
+            spender_cs,
+            amount,
+            allowance,
+        )
         return self.executor.send(token_contract.functions.approve(spender_cs, MAX_UINT256), "approve", gas=100000)
 
     def swap(self, token_in: str, token_out: str, amount_in: int) -> TxResult | None:
@@ -241,7 +273,33 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         )
         if not quote:
             return None
+        log_block(
+            log,
+            logging.INFO,
+            "swap quote selected",
+            pool_context(self.pool),
+            {
+                "stage": "quote",
+                "action": "swap",
+                "provider": quote.get("provider"),
+                "token_in": Web3.to_checksum_address(token_in),
+                "token_out": Web3.to_checksum_address(token_out),
+                "amount_in_raw": amount_in,
+                "quote_buy_amount_raw": quote.get("buyAmount"),
+                "price_impact": quote.get("price_impact"),
+                "allowance_target": quote.get("allowanceTarget"),
+                "estimated_gas": quote.get("estimatedGas"),
+            },
+        )
         if float(quote.get("price_impact", 0)) > self.pool.max_swap_price_impact_pct:
+            log.warning(
+                "swap quote rejected by price impact pool=%s chain=%s provider=%s price_impact=%s max_allowed=%s",
+                self.pool.name,
+                self.pool.chain,
+                quote.get("provider"),
+                quote.get("price_impact"),
+                self.pool.max_swap_price_impact_pct,
+            )
             return None
         dust_result = self._dust_output_result(token_out, quote)
         if dust_result:
@@ -285,21 +343,152 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             Web3.to_checksum_address(self.pool.bot_wallet),
             deadline,
         )
+        log_block(
+            log,
+            logging.INFO,
+            "mint start",
+            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+            {
+                "stage": "mint_start",
+                "action": "mint",
+                "token0": self.pool.token0_address,
+                "token1": self.pool.token1_address,
+                "fee": int(self.pool.fee),
+                "tick_lower": int(plan.new_tick_lower),
+                "tick_upper": int(plan.new_tick_upper),
+                "amount0_desired_raw": int(plan.amount0_desired),
+                "amount1_desired_raw": int(plan.amount1_desired),
+                "amount0_min_raw": min0,
+                "amount1_min_raw": min1,
+                "deadline": deadline,
+            },
+        )
         result = self.executor.send(self.npm.functions.mint(params), "mint", gas=700000)
         if result.dry_run:
             return result, None
         receipt = self._mint_receipt_from_result(result)
         if receipt is None:
+            log_block(
+                log,
+                logging.WARNING,
+                "mint receipt unavailable",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+                {
+                    "stage": "mint_receipt",
+                    "status": result.status,
+                    "tx_hash": result.tx_hash,
+                    "signed_tx_hash": result.metadata.get("signed_tx_hash") if result.metadata else None,
+                    "next_action": "journal recovery will try receipt lookup",
+                },
+            )
             return result, None
         if int(receipt.get("status", 0)) != 1:
             result.metadata["error"] = "mint transaction reverted"
+            log_block(
+                log,
+                logging.WARNING,
+                "mint reverted",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+                {
+                    "stage": "mint_receipt",
+                    "status": "REVERTED",
+                    "tx_hash": result.tx_hash,
+                    "block": receipt.get("blockNumber"),
+                    "reason": "execution reverted",
+                },
+            )
             return result, None
         token_id = self._new_token_id_from_mint_receipt(receipt)
         if token_id is None:
+            log_block(
+                log,
+                logging.WARNING,
+                "mint validation",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+                {
+                    "stage": "mint_receipt",
+                    "status": "TOKEN_ID_MISSING",
+                    "tx_hash": result.tx_hash,
+                    "block": receipt.get("blockNumber"),
+                    "reason": "IncreaseLiquidity token id not found",
+                },
+            )
             return result, None
-        if not self._minted_position_matches_plan(token_id, plan):
-            result.metadata["error"] = "mint receipt token does not match requested pool/range"
+        receipt_block = int(receipt.get("blockNumber") or 0)
+        log_block(
+            log,
+            logging.INFO,
+            "mint receipt",
+            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+            {
+                "stage": "mint_receipt",
+                "status": "SUCCESS",
+                "tx_hash": self._hex_value(receipt.get("transactionHash")) or result.tx_hash,
+                "block": receipt_block,
+            },
+        )
+        validation = self._validate_minted_position_detail(
+            token_id,
+            plan,
+            receipt_block=receipt_block,
+        )
+        if validation.status == "VALID_WITH_RANGE_WARNING":
+            result.metadata["mint_validation_warning"] = validation.reason
+            log_block(
+                log,
+                logging.WARNING,
+                "mint validation warning",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+                {
+                    "stage": "mint_validation",
+                    "validation_status": validation.status,
+                    "reason": validation.reason,
+                    "rpc": validation.rpc_label,
+                    "expected_range": [int(plan.new_tick_lower), int(plan.new_tick_upper)],
+                    "actual_range": (
+                        [validation.position.tick_lower, validation.position.tick_upper]
+                        if validation.position
+                        else None
+                    ),
+                    "actual_owner": validation.position.owner if validation.position else None,
+                    "liquidity": validation.position.liquidity if validation.position else None,
+                    "next_action": "stake anyway because owner/pool/liquidity are valid",
+                },
+            )
+        if not validation.can_stake:
+            result.metadata["error"] = f"mint receipt token validation failed: {validation.reason}"
+            log_block(
+                log,
+                logging.WARNING,
+                "mint validation result",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+                {
+                    "stage": "mint_validation",
+                    "validation_status": validation.status,
+                    "reason": validation.reason,
+                    "rpc": validation.rpc_label,
+                    "next_action": "mark recovery required",
+                },
+            )
             return result, None
+        log_block(
+            log,
+            logging.INFO,
+            "mint validation result",
+            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+            {
+                "stage": "mint_validation",
+                "validation_status": validation.status,
+                "reason": validation.reason,
+                "rpc": validation.rpc_label,
+                "actual_owner": validation.position.owner if validation.position else None,
+                "actual_range": (
+                    [validation.position.tick_lower, validation.position.tick_upper] if validation.position else None
+                ),
+                "liquidity": validation.position.liquidity if validation.position else None,
+                "next_action": "stake minted token",
+            },
+        )
         if result.status in {"BROADCAST_UNKNOWN", "PENDING"}:
             result.status = "RECOVERED"
             receipt_hash = self._hex_value(receipt.get("transactionHash"))
@@ -310,7 +499,7 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             result.gas_price_gwei = (
                 float(Web3.from_wei(effective_gas_price, "gwei")) if effective_gas_price else 0.0
             )
-            result.metadata["receipt_block"] = int(receipt.get("blockNumber") or 0)
+            result.metadata["receipt_block"] = receipt_block
             result.metadata["recovered_from_receipt"] = True
         return result, token_id
 
@@ -333,51 +522,282 @@ class PancakeV3MasterChefAdapter(DexAdapter):
 
     def _new_token_id_from_mint_receipt(self, receipt) -> int | None:
         topic = INCREASE_LIQUIDITY_TOPIC.lower()
+        npm_address = self.npm_address.lower()
+        candidates = []
+        ignored_non_npm = 0
         for ev in receipt.get("logs", []):
             topics = ev.get("topics") or []
             if len(topics) < 2:
                 continue
             if self._hex_value(topics[0]).lower() != topic:
                 continue
+            log_address = str(ev.get("address") or "").lower()
+            if log_address != npm_address:
+                ignored_non_npm += 1
+                continue
             try:
-                return int(self._hex_value(topics[1]), 16)
+                candidates.append(int(self._hex_value(topics[1]), 16))
             except ValueError:
-                return None
-        return None
+                continue
+        selected = candidates[0] if candidates else None
+        log_block(
+            log,
+            logging.INFO,
+            "mint receipt parse",
+            pool_context(self.pool, new_token_id=selected),
+            {
+                "stage": "mint_receipt_parse",
+                "tx_hash": self._hex_value(receipt.get("transactionHash")),
+                "npm_address": self.npm_address,
+                "candidate_count": len(candidates),
+                "selected_token_id": selected,
+                "ignored_non_npm_logs": ignored_non_npm,
+                "status": "TOKEN_ID_FOUND" if selected is not None else "TOKEN_ID_MISSING",
+            },
+        )
+        return selected
 
     def _minted_position_matches_plan(self, token_id: int, plan) -> bool:
+        return self._validate_minted_position(token_id, plan)[0]
+
+    def _validate_minted_position(
+        self,
+        token_id: int,
+        plan,
+        receipt_block: int | None = None,
+        attempts: int = 6,
+        sleep_seconds: float = 10.0,
+    ) -> tuple[bool, str | None]:
+        result = self._validate_minted_position_detail(
+            token_id,
+            plan,
+            receipt_block=receipt_block,
+            attempts=attempts,
+            sleep_seconds=sleep_seconds,
+        )
+        return result.can_stake, result.reason
+
+    def _validate_minted_position_detail(
+        self,
+        token_id: int,
+        plan,
+        receipt_block: int | None = None,
+        attempts: int = 6,
+        sleep_seconds: float = 10.0,
+    ) -> MintValidationResult:
+        primary_attempts = max(1, int(attempts))
+        fallback_attempts = max(1, min(2, primary_attempts))
+        fallback_sleep = min(2.0, float(sleep_seconds))
+        sources = self._mint_validation_rpc_sources()
+        last_result = MintValidationResult("READ_FAILED", "validation did not run")
+        for source_index, (rpc_label, validation_w3) in enumerate(sources):
+            source_attempts = primary_attempts if source_index == 0 else fallback_attempts
+            source_sleep = sleep_seconds if source_index == 0 else fallback_sleep
+            if source_index == 0:
+                self._wait_until_receipt_block_visible(receipt_block, attempts=source_attempts, sleep_seconds=source_sleep)
+            for attempt in range(1, source_attempts + 1):
+                result = self._validate_minted_position_once(token_id, plan, validation_w3, rpc_label)
+                last_result = result
+                if result.can_stake:
+                    if attempt > 1 or source_index > 0:
+                        log_block(
+                            log,
+                            logging.INFO,
+                            "mint validation retry",
+                            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+                            self._mint_validation_log_fields(
+                                result,
+                                plan,
+                                attempt=attempt,
+                                max_attempts=source_attempts,
+                                next_action="stake minted token",
+                            ),
+                        )
+                    return result
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "mint validation retry",
+                    pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+                    self._mint_validation_log_fields(
+                        result,
+                        plan,
+                        attempt=attempt,
+                        max_attempts=source_attempts,
+                        next_action=(
+                            "retry same RPC"
+                            if attempt < source_attempts
+                            else ("try next RPC fallback" if source_index < len(sources) - 1 else "mark recovery required")
+                        ),
+                    ),
+                )
+                if attempt < source_attempts:
+                    time.sleep(source_sleep)
+        log_block(
+            log,
+            logging.WARNING,
+            "mint validation result",
+            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None), new_token_id=token_id),
+            self._mint_validation_log_fields(
+                last_result,
+                plan,
+                attempt=None,
+                max_attempts=None,
+                next_action="mark recovery required",
+            ),
+        )
+        return last_result
+
+    def _validate_minted_position_once(self, token_id: int, plan, validation_w3=None, rpc_label: str = "primary") -> MintValidationResult:
         try:
-            position = self.read_npm_position(int(token_id), owner=self.pool.bot_wallet)
+            position = self._read_npm_position_with_w3(validation_w3 or self.w3, int(token_id), owner=self.pool.bot_wallet)
         except Exception as exc:
-            log.warning("could not validate recovered mint position pool=%s tokenId=%s: %s", self.pool.name, token_id, exc)
-            return False
+            return MintValidationResult("READ_FAILED", f"position read failed: {exc}", rpc_label=rpc_label)
         owner = position.owner.lower()
         if owner not in {self.pool.bot_wallet.lower(), self.masterchef_address.lower()}:
-            log.warning(
-                "recovered mint token owner mismatch pool=%s tokenId=%s owner=%s",
-                self.pool.name,
-                token_id,
-                position.owner,
-            )
-            return False
+            return MintValidationResult("INVALID_OWNER", f"owner mismatch: owner={position.owner}", position, rpc_label)
         if not self._matches_pool(position.token0, position.token1, position.fee):
-            log.warning("recovered mint token pool mismatch pool=%s tokenId=%s", self.pool.name, token_id)
-            return False
-        if int(position.tick_lower) != int(plan.new_tick_lower) or int(position.tick_upper) != int(plan.new_tick_upper):
-            log.warning(
-                "recovered mint token range mismatch pool=%s tokenId=%s expected=(%s,%s) actual=(%s,%s)",
-                self.pool.name,
-                token_id,
-                plan.new_tick_lower,
-                plan.new_tick_upper,
-                position.tick_lower,
-                position.tick_upper,
+            return MintValidationResult(
+                "INVALID_POOL",
+                "pool mismatch: "
+                f"actual_token0={position.token0} actual_token1={position.token1} actual_fee={position.fee} "
+                f"expected_token0={self.pool.token0_address} expected_token1={self.pool.token1_address} "
+                f"expected_fee={self.pool.fee}",
+                position,
+                rpc_label,
             )
-            return False
-        return int(position.liquidity) > 0
+        if int(position.liquidity) <= 0:
+            return MintValidationResult("INVALID_LIQUIDITY", "zero liquidity", position, rpc_label)
+        if int(position.tick_lower) != int(plan.new_tick_lower) or int(position.tick_upper) != int(plan.new_tick_upper):
+            return MintValidationResult(
+                "VALID_WITH_RANGE_WARNING",
+                "range mismatch: "
+                f"expected=({plan.new_tick_lower},{plan.new_tick_upper}) "
+                f"actual=({position.tick_lower},{position.tick_upper})",
+                position,
+                rpc_label,
+            )
+        return MintValidationResult("VALID", None, position, rpc_label)
+
+    def _read_npm_position_with_w3(self, w3: Web3, token_id: int, owner: str | None = None) -> PositionSnapshot:
+        if w3 is self.w3:
+            return self.read_npm_position(token_id, owner=owner)
+        npm = w3.eth.contract(address=self.npm_address, abi=NPM_ABI)
+        pos = npm.functions.positions(int(token_id)).call()
+        actual_owner = owner
+        try:
+            actual_owner = npm.functions.ownerOf(int(token_id)).call()
+        except Exception:
+            pass
+        return PositionSnapshot(
+            token_id=int(token_id),
+            owner=Web3.to_checksum_address(actual_owner or self.pool.bot_wallet),
+            pool_address=self.pool.pool_address,
+            token0=Web3.to_checksum_address(pos[2]),
+            token1=Web3.to_checksum_address(pos[3]),
+            fee=int(pos[4]),
+            tick_lower=int(pos[5]),
+            tick_upper=int(pos[6]),
+            liquidity=int(pos[7]),
+            tokens_owed0=int(pos[10]),
+            tokens_owed1=int(pos[11]),
+            pid=self.pool.pid,
+            is_staked=False,
+        )
+
+    def _mint_validation_rpc_sources(self) -> list[tuple[str, Web3]]:
+        sources = [("primary", self.w3)]
+        try:
+            from latest_farms.config import RPC_BACKUP_LIST, RPC_URLS_2
+        except ImportError:  # pragma: no cover
+            from config import RPC_BACKUP_LIST, RPC_URLS_2
+
+        current_url = getattr(getattr(self.w3, "provider", None), "endpoint_uri", None)
+        seen = {current_url} if current_url else set()
+        rpc_urls = [RPC_URLS_2.get(self.pool.chain)] + RPC_BACKUP_LIST.get(self.pool.chain, [])
+        fallback_index = 1
+        for url in [item for item in rpc_urls if item]:
+            if url in seen:
+                continue
+            seen.add(url)
+            sources.append((f"fallback-{fallback_index}:{self._rpc_label(url)}", self._web3_for_rpc(url)))
+            fallback_index += 1
+        return sources
+
+    def _mint_validation_log_fields(
+        self,
+        result: MintValidationResult,
+        plan,
+        attempt: int | None,
+        max_attempts: int | None,
+        next_action: str,
+    ) -> dict:
+        position = result.position
+        return {
+            "stage": "mint_validation",
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "rpc": result.rpc_label,
+            "validation_status": result.status,
+            "reason": result.reason,
+            "actual_owner": position.owner if position else None,
+            "actual_token0": position.token0 if position else None,
+            "actual_token1": position.token1 if position else None,
+            "actual_fee": position.fee if position else None,
+            "expected_range": [int(plan.new_tick_lower), int(plan.new_tick_upper)],
+            "actual_range": [position.tick_lower, position.tick_upper] if position else None,
+            "liquidity": position.liquidity if position else None,
+            "next_action": next_action,
+        }
+
+    def _wait_until_receipt_block_visible(
+        self,
+        receipt_block: int | None,
+        attempts: int,
+        sleep_seconds: float,
+    ) -> None:
+        if not receipt_block:
+            return
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                latest_block = int(self.w3.eth.block_number)
+            except Exception as exc:
+                log.warning(
+                    "could not read latest block before mint validation pool=%s chain=%s receipt_block=%s error=%s",
+                    self.pool.name,
+                    self.pool.chain,
+                    receipt_block,
+                    exc,
+                )
+                return
+            if latest_block >= int(receipt_block):
+                return
+            log.warning(
+                "waiting for rpc to reach mint receipt block pool=%s chain=%s latest_block=%s receipt_block=%s attempt=%s/%s",
+                self.pool.name,
+                self.pool.chain,
+                latest_block,
+                receipt_block,
+                attempt,
+                attempts,
+            )
+            if attempt < attempts:
+                time.sleep(sleep_seconds)
 
     def stake(self, token_id: int) -> TxResult:
         data = self.w3.codec.encode(["uint256"], [int(self.pool.pid or 0)])
+        log_block(
+            log,
+            logging.INFO,
+            "stake start",
+            pool_context(self.pool, new_token_id=token_id),
+            {
+                "stage": "stake_start",
+                "action": "stake",
+                "pid": self.pool.pid,
+                "masterchef": self.masterchef_address,
+            },
+        )
         return self.executor.send(
             self.npm.functions.safeTransferFrom(
                 Web3.to_checksum_address(self.pool.bot_wallet),
@@ -459,21 +879,30 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         if not private_key:
             raise RuntimeError(f"missing private key env {self.pool.private_key_env}")
         signed = self.w3.eth.account.sign_transaction(tx, private_key)
-        log.info(
-            "broadcast swap tx pool=%s chain=%s token_in=%s token_out=%s amount_in=%s "
-            "to=%s value=%s nonce=%s gas=%s max_fee_gwei=%.9f priority_fee_gwei=%.9f data_length=%s",
-            self.pool.name,
-            self.pool.chain,
-            metadata.get("token_in"),
-            metadata.get("token_out"),
-            metadata.get("amount_in"),
-            tx["to"],
-            tx["value"],
-            tx["nonce"],
-            gas_limit,
-            metadata["max_fee_per_gas_gwei"],
-            metadata["max_priority_fee_per_gas_gwei"],
-            metadata["data_length"],
+        signed_tx_hash = Web3.keccak(signed.raw_transaction).hex()
+        if not signed_tx_hash.startswith("0x"):
+            signed_tx_hash = "0x" + signed_tx_hash
+        metadata["signed_tx_hash"] = signed_tx_hash
+        log_block(
+            log,
+            logging.INFO,
+            "swap broadcast",
+            pool_context(self.pool),
+            {
+                "stage": "swap_broadcast",
+                "action": "swap",
+                "token_in": metadata.get("token_in"),
+                "token_out": metadata.get("token_out"),
+                "amount_in_raw": metadata.get("amount_in"),
+                "to": tx["to"],
+                "value": tx["value"],
+                "nonce": tx["nonce"],
+                "gas_limit": gas_limit,
+                "max_fee_gwei": f"{metadata['max_fee_per_gas_gwei']:.9f}",
+                "priority_fee_gwei": f"{metadata['max_priority_fee_per_gas_gwei']:.9f}",
+                "data_length": metadata["data_length"],
+                "signed_tx_hash": signed_tx_hash,
+            },
         )
         tx_hash = None
         broadcast_w3 = self.w3
@@ -488,18 +917,42 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                 tx_hash = candidate_w3.eth.send_raw_transaction(signed.raw_transaction)
                 broadcast_w3 = candidate_w3
                 metadata["broadcast_rpc"] = rpc_label
+                tx_hash_hex = tx_hash.hex()
+                if not tx_hash_hex.startswith("0x"):
+                    tx_hash_hex = "0x" + tx_hash_hex
+                metadata["broadcast_tx_hash"] = tx_hash_hex
+                log_block(
+                    log,
+                    logging.INFO,
+                    "swap broadcast accepted",
+                    pool_context(self.pool),
+                    {
+                        "stage": "swap_broadcast",
+                        "status": "ACCEPTED",
+                        "tx_hash": tx_hash_hex,
+                        "signed_tx_hash": signed_tx_hash,
+                        "rpc": rpc_label,
+                        "nonce": metadata.get("nonce"),
+                    },
+                )
                 break
             except Exception as exc:
                 broadcast_errors.append(f"{rpc_label}: {exc}")
-                log.warning(
-                    "swap tx broadcast failed pool=%s token_in=%s token_out=%s amount_in=%s "
-                    "rpc=%s error=%s",
-                    self.pool.name,
-                    metadata.get("token_in"),
-                    metadata.get("token_out"),
-                    metadata.get("amount_in"),
-                    rpc_label,
-                    exc,
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "swap broadcast failed",
+                    pool_context(self.pool),
+                    {
+                        "stage": "swap_broadcast",
+                        "status": "FAILED",
+                        "rpc": rpc_label,
+                        "token_in": metadata.get("token_in"),
+                        "token_out": metadata.get("token_out"),
+                        "amount_in_raw": metadata.get("amount_in"),
+                        "reason": exc,
+                        "next_action": "try next RPC fallback",
+                    },
                 )
         if tx_hash is None:
             return TxResult(
@@ -514,8 +967,26 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         try:
             receipt = broadcast_w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
         except TimeExhausted as exc:
+            tx_hash_hex = tx_hash.hex()
+            if not tx_hash_hex.startswith("0x"):
+                tx_hash_hex = "0x" + tx_hash_hex
+            log_block(
+                log,
+                logging.WARNING,
+                "swap receipt timeout",
+                pool_context(self.pool),
+                {
+                    "stage": "swap_receipt",
+                    "status": "PENDING",
+                    "tx_hash": tx_hash_hex,
+                    "signed_tx_hash": signed_tx_hash,
+                    "rpc": metadata.get("broadcast_rpc"),
+                    "reason": exc,
+                    "next_action": "recovery will inspect pending swap",
+                },
+            )
             return TxResult(
-                tx_hash=tx_hash.hex(),
+                tx_hash=tx_hash_hex,
                 status="PENDING",
                 metadata={
                     **metadata,
@@ -523,20 +994,59 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                 },
             )
         if receipt["status"] != 1:
+            tx_hash_hex = tx_hash.hex()
+            if not tx_hash_hex.startswith("0x"):
+                tx_hash_hex = "0x" + tx_hash_hex
+            log_block(
+                log,
+                logging.WARNING,
+                "swap reverted",
+                pool_context(self.pool),
+                {
+                    "stage": "swap_receipt",
+                    "status": "SWAP_BLOCKED",
+                    "tx_hash": tx_hash_hex,
+                    "block": receipt.get("blockNumber"),
+                    "gas_used": receipt.get("gasUsed"),
+                    "reason": "execution reverted",
+                    "next_action": "recovery will retry swap from reservation",
+                },
+            )
             return TxResult(
-                tx_hash=tx_hash.hex(),
+                tx_hash=tx_hash_hex,
                 status="FAILED",
                 gas_used=int(receipt.get("gasUsed") or 0),
                 metadata={**metadata, "error": "swap transaction reverted"},
             )
         effective_gas_price = int(receipt.get("effectiveGasPrice") or gas_params["maxFeePerGas"])
+        tx_hash_hex = tx_hash.hex()
+        if not tx_hash_hex.startswith("0x"):
+            tx_hash_hex = "0x" + tx_hash_hex
+        gas_used = int(receipt["gasUsed"])
+        gas_price_gwei = float(Web3.from_wei(effective_gas_price, "gwei"))
+        receipt_block = int(receipt["blockNumber"])
+        log_block(
+            log,
+            logging.INFO,
+            "swap receipt",
+            pool_context(self.pool),
+            {
+                "stage": "swap_receipt",
+                "status": receipt.get("status"),
+                "tx_hash": tx_hash_hex,
+                "block": receipt_block,
+                "gas_used": gas_used,
+                "effective_gas_price_gwei": f"{gas_price_gwei:.9f}",
+                "rpc": metadata.get("broadcast_rpc"),
+            },
+        )
         return TxResult(
-            tx_hash=tx_hash.hex(),
-            gas_used=int(receipt["gasUsed"]),
-            gas_price_gwei=float(Web3.from_wei(effective_gas_price, "gwei")),
+            tx_hash=tx_hash_hex,
+            gas_used=gas_used,
+            gas_price_gwei=gas_price_gwei,
             metadata={
                 **metadata,
-                "receipt_block": int(receipt["blockNumber"]),
+                "receipt_block": receipt_block,
                 "gas_limit": gas_limit,
                 "max_fee_per_gas_gwei": float(Web3.from_wei(gas_params["maxFeePerGas"], "gwei")),
                 "max_priority_fee_per_gas_gwei": float(

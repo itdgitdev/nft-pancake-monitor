@@ -8,6 +8,7 @@ from web3 import Web3
 from web3.exceptions import TimeExhausted
 
 from .evm import DEFAULT_GAS_POLICIES, get_chain_id, get_gas_params, validate_gas_cap
+from .logging_utils import log_block, pool_context
 from .models import GasPolicy, PoolConfig, TxResult, WorkerConfig
 
 log = logging.getLogger("configured_pool_rebalancer")
@@ -64,33 +65,42 @@ class TxExecutor:
         if not signed_tx_hash.startswith("0x"):
             signed_tx_hash = "0x" + signed_tx_hash
         metadata["signed_tx_hash"] = signed_tx_hash
-        log.info(
-            "broadcast %s tx pool=%s chain=%s to=%s value=%s nonce=%s gas=%s "
-            "max_fee_gwei=%.9f priority_fee_gwei=%.9f data_length=%s signed_tx_hash=%s",
-            label,
-            self.pool.name,
-            self.pool.chain,
-            metadata.get("to"),
-            metadata.get("value"),
-            metadata.get("nonce"),
-            metadata.get("gas_limit"),
-            metadata.get("max_fee_per_gas_gwei", 0.0),
-            metadata.get("max_priority_fee_per_gas_gwei", 0.0),
-            metadata.get("data_length"),
-            signed_tx_hash,
+        log_block(
+            log,
+            logging.INFO,
+            f"{label} broadcast",
+            pool_context(self.pool),
+            {
+                "stage": "broadcast",
+                "action": label,
+                "to": metadata.get("to"),
+                "value": metadata.get("value"),
+                "nonce": metadata.get("nonce"),
+                "gas_limit": metadata.get("gas_limit"),
+                "max_fee_gwei": f"{metadata.get('max_fee_per_gas_gwei', 0.0):.9f}",
+                "priority_fee_gwei": f"{metadata.get('max_priority_fee_per_gas_gwei', 0.0):.9f}",
+                "data_length": metadata.get("data_length"),
+                "signed_tx_hash": signed_tx_hash,
+            },
         )
         try:
             tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         except Exception as exc:
             if label != "mint":
                 raise
-            log.warning(
-                "%s tx broadcast returned error after signing pool=%s chain=%s signed_tx_hash=%s error=%s",
-                label,
-                self.pool.name,
-                self.pool.chain,
-                signed_tx_hash,
-                exc,
+            log_block(
+                log,
+                logging.WARNING,
+                f"{label} broadcast unknown",
+                pool_context(self.pool),
+                {
+                    "stage": "broadcast",
+                    "action": label,
+                    "status": "BROADCAST_UNKNOWN",
+                    "signed_tx_hash": signed_tx_hash,
+                    "reason": exc,
+                    "next_action": "journal recovery will try receipt lookup",
+                },
             )
             return TxResult(
                 tx_hash=signed_tx_hash,
@@ -101,11 +111,39 @@ class TxExecutor:
         if not tx_hash_hex.startswith("0x"):
             tx_hash_hex = "0x" + tx_hash_hex
         metadata["broadcast_tx_hash"] = tx_hash_hex
+        log_block(
+            log,
+            logging.INFO,
+            f"{label} broadcast accepted",
+            pool_context(self.pool),
+            {
+                "stage": "broadcast_accepted",
+                "action": label,
+                "tx_hash": tx_hash_hex,
+                "signed_tx_hash": signed_tx_hash,
+                "nonce": metadata.get("nonce"),
+            },
+        )
         try:
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
         except TimeExhausted as exc:
             if label != "mint":
                 raise
+            log_block(
+                log,
+                logging.WARNING,
+                f"{label} receipt timeout",
+                pool_context(self.pool),
+                {
+                    "stage": "receipt_wait",
+                    "action": label,
+                    "status": "PENDING",
+                    "tx_hash": tx_hash_hex,
+                    "signed_tx_hash": signed_tx_hash,
+                    "reason": exc,
+                    "next_action": "journal recovery will try receipt lookup",
+                },
+            )
             return TxResult(
                 tx_hash=tx_hash_hex,
                 status="PENDING",
@@ -114,11 +152,29 @@ class TxExecutor:
         if receipt["status"] != 1:
             raise RuntimeError(f"{label} reverted: {tx_hash_hex}")
         effective_gas_price = int(receipt.get("effectiveGasPrice") or gas_params["maxFeePerGas"])
+        receipt_block = int(receipt.get("blockNumber") or 0)
+        gas_used = int(receipt["gasUsed"])
+        gas_price_gwei = float(Web3.from_wei(effective_gas_price, "gwei"))
+        log_block(
+            log,
+            logging.INFO,
+            f"{label} receipt",
+            pool_context(self.pool),
+            {
+                "stage": "receipt",
+                "action": label,
+                "status": receipt.get("status"),
+                "tx_hash": tx_hash_hex,
+                "block": receipt_block,
+                "gas_used": gas_used,
+                "effective_gas_price_gwei": f"{gas_price_gwei:.9f}",
+            },
+        )
         return TxResult(
             tx_hash=tx_hash_hex,
-            gas_used=int(receipt["gasUsed"]),
-            gas_price_gwei=float(Web3.from_wei(effective_gas_price, "gwei")),
-            metadata={**metadata, "receipt_block": int(receipt.get("blockNumber") or 0)},
+            gas_used=gas_used,
+            gas_price_gwei=gas_price_gwei,
+            metadata={**metadata, "receipt_block": receipt_block},
         )
 
     def gas_policy(self) -> GasPolicy:

@@ -387,7 +387,7 @@ def get_token_price_from_dexscreener(token_address, min_liquidity_usd=1000):
         return 0
     
 # API_CMC_KEY = "431ffea7-d90a-47db-843a-90e08887b28d"
-API_CMC_KEY = "ac7768b3a6ee41678591151b63b03af8"
+API_CMC_KEY = "6db1422fd02046ae915c39c0660b0997"
 HEADERS = {"X-CMC_PRO_API_KEY": API_CMC_KEY}
 
 def get_token_prices_by_address(convert: str = "USD"):

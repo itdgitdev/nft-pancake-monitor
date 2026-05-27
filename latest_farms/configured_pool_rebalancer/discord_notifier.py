@@ -103,6 +103,43 @@ class DiscordNotifier:
             ]
         )
 
+    def partial_action_message(
+        self,
+        pool_name: str,
+        chain: str,
+        wallet: str,
+        old_token_id: int,
+        action: str,
+        status: str,
+        reason: str,
+        next_action: str,
+        tx_hash: str | None = None,
+        signed_tx_hash: str | None = None,
+        new_token_id: int | None = None,
+    ) -> str:
+        lines = [
+            "**Configured Rebalancer Transaction Partial**",
+            f"Pool: `{pool_name}` | Chain: `{chain}`",
+            f"Wallet: `{wallet}`",
+            f"Old NFT: `{old_token_id}`",
+            f"Action: `{action}` | Status: `{status}`",
+        ]
+        if new_token_id is not None:
+            lines.append(f"New NFT: `{new_token_id}`")
+        if tx_hash:
+            lines.append(f"Tx: `{tx_hash}`")
+        if signed_tx_hash and signed_tx_hash != tx_hash:
+            lines.append(f"Signed tx hash: `{signed_tx_hash}`")
+        lines.extend(
+            [
+                f"Reason: `{reason[:700]}`",
+                "",
+                "Worker will not blindly resend a transaction that may already be broadcast.",
+                f"Next action: `{next_action[:500]}`",
+            ]
+        )
+        return "\n".join(lines)
+
     def recovery_required_message(
         self,
         pool_name: str,

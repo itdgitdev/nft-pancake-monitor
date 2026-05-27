@@ -79,6 +79,8 @@ class WorkerConfig:
     cache_dir: str = "latest_farms/configured_pool_rebalancer/cache"
     legacy_position_cache_dir: str = "latest_farms/positions_cache"
     use_legacy_position_cache: bool = True
+    use_db_position_cache: bool = True
+    db_position_cache_source: str = "positions_cache"
     lock_timeout_seconds: int = 60
     dry_run: bool = True
     pnl_native_prices_usd: dict[str, float] = field(default_factory=dict)

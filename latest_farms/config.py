@@ -95,7 +95,7 @@ RPC_URLS = {
     "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA}",
 }
 
-# API_KEY_INFURA_2 = "092b14b418b04a38b52e444f2baf10e1"
+API_KEY_INFURA_1 = "92cf6964acae46008404ef57df3020b7"
 API_KEY_INFURA_2 = "afb06acf1c3542aca75c89203c9f9a28"
 API_KEY_INFURA_3 = "b0cdf677b6fc411297e25fd395fec257"
 RPC_URLS_2 = {

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from web3 import Web3
 
 from .adapter import PancakeV3MasterChefAdapter
 from .models import PoolConfig, PositionSnapshot
+from .position_cache_snapshot import fetch_position_cache_snapshot
+
+
+log = logging.getLogger("configured_pool_rebalancer")
 
 
 DEPOSIT_TOPIC = "0x" + Web3.keccak(text="Deposit(address,uint256,uint256,uint256,int24,int24)").hex()
@@ -20,21 +25,32 @@ except ImportError:  # pragma: no cover
 
 
 class PositionIndex:
-    def __init__(self, cache_dir: str, legacy_cache_dir: str | None = None, use_legacy_cache: bool = True):
+    def __init__(
+        self,
+        cache_dir: str,
+        legacy_cache_dir: str | None = None,
+        use_legacy_cache: bool = True,
+        use_db_cache: bool = True,
+        db_cache_source: str = "positions_cache",
+    ):
         self.cache_dir = Path(cache_dir)
         self.legacy_cache_dir = Path(legacy_cache_dir) if legacy_cache_dir else None
         self.use_legacy_cache = use_legacy_cache
+        self.use_db_cache = use_db_cache
+        self.db_cache_source = db_cache_source
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def refresh(self, w3: Web3, pool: PoolConfig, adapter: PancakeV3MasterChefAdapter) -> dict[int, PositionSnapshot]:
         cached = self._load(pool)
         token_ids = set(cached.get("token_ids", []))
+        db_snapshot = self._load_db_pool_candidates(pool, cached)
+        token_ids.update(db_snapshot["token_ids"])
         legacy = self._load_legacy_pool_candidates(pool)
         token_ids.update(legacy["token_ids"])
         token_ids.update(pool.seed_token_ids)
 
         latest_block = int(w3.eth.get_block("latest")["number"])
-        sync = self._resolve_sync_window(w3, cached, legacy, pool, latest_block)
+        sync = self._resolve_sync_window(w3, cached, db_snapshot, legacy, pool, latest_block)
         from_block = int(sync["from_block"])
         swept_logs = False
 
@@ -57,23 +73,30 @@ class PositionIndex:
             for token_id, pos in positions.items()
             if pos.owner.lower() in managed
         }
-        self._save(pool, filtered, latest_block, legacy, sync={**sync, "swept_logs": swept_logs})
+        self._save(pool, filtered, latest_block, legacy, db_snapshot, sync={**sync, "swept_logs": swept_logs})
         return filtered
 
     def _resolve_sync_window(
         self,
         w3: Web3,
         cached: dict,
+        db_snapshot: dict,
         legacy: dict,
         pool: PoolConfig,
         latest_block: int,
     ) -> dict:
         cached_block = int(cached.get("last_synced_block") or 0)
+        db_block = int(db_snapshot.get("last_synced_block") or 0)
+        db_token_count = len(db_snapshot.get("token_ids", []))
+        db_pid_bootstrapped = bool(db_snapshot.get("pid_bootstrapped", False))
         legacy_block = int(legacy.get("last_synced_block") or 0)
         legacy_token_count = len(legacy.get("token_ids", []))
         if cached_block:
             source = "module_cache"
             from_block = cached_block + 1
+        elif db_block and (db_token_count or db_pid_bootstrapped):
+            source = "db_position_cache"
+            from_block = db_block + 1
         elif legacy_block and legacy_token_count:
             source = "legacy_cache"
             from_block = legacy_block + 1
@@ -104,6 +127,9 @@ class PositionIndex:
             "from_block": from_block,
             "latest_block": latest_block,
             "cached_block": cached_block,
+            "db_block": db_block,
+            "db_token_count": db_token_count,
+            "db_pid_bootstrapped": db_pid_bootstrapped,
             "legacy_block": legacy_block,
             "legacy_token_count": legacy_token_count,
             "auto_bootstrap_start_block": pool.auto_bootstrap_start_block,
@@ -186,6 +212,54 @@ class PositionIndex:
             "source": str(path),
         }
 
+    def _load_db_pool_candidates(self, pool: PoolConfig, cached: dict) -> dict:
+        if not self.use_db_cache:
+            return {"token_ids": set(), "last_synced_block": 0, "source": None, "pid_bootstrapped": False}
+        if int(cached.get("last_synced_block") or 0):
+            return {"token_ids": set(), "last_synced_block": 0, "source": None, "pid_bootstrapped": False}
+        try:
+            snapshot = fetch_position_cache_snapshot(pool.chain, self.db_cache_source)
+        except Exception as exc:
+            log.warning("could not load DB position cache snapshot chain=%s source=%s: %s", pool.chain, self.db_cache_source, exc)
+            return {"token_ids": set(), "last_synced_block": 0, "source": "db:error", "pid_bootstrapped": False}
+        if not snapshot:
+            return {"token_ids": set(), "last_synced_block": 0, "source": "db:missing", "pid_bootstrapped": False}
+        data = snapshot.get("snapshot") or {}
+        candidates, pid_bootstrapped = self._candidate_token_ids_from_snapshot(data, pool)
+        return {
+            "token_ids": candidates,
+            "last_synced_block": int(snapshot.get("last_synced_block") or data.get("last_synced_block") or 0),
+            "source": f"db:{self.db_cache_source}",
+            "pid_bootstrapped": pid_bootstrapped,
+            "position_count": int(snapshot.get("position_count") or 0),
+        }
+
+    def _candidate_token_ids_from_snapshot(self, data: dict, pool: PoolConfig) -> tuple[set[int], bool]:
+        candidates: set[int] = set()
+        positions = data.get("positions", {})
+        if not isinstance(positions, dict):
+            return candidates, False
+        pid_bootstrapped = False
+        if pool.pid is not None:
+            try:
+                pid_bootstrapped = int(pool.pid) in {int(pid) for pid in data.get("bootstrapped_pids", [])}
+            except (TypeError, ValueError):
+                pid_bootstrapped = False
+        for raw_token_id, info in positions.items():
+            if not isinstance(info, dict):
+                continue
+            if pool.pid is not None:
+                try:
+                    if int(info.get("pid", -1)) != int(pool.pid):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            try:
+                candidates.add(int(raw_token_id))
+            except (TypeError, ValueError):
+                continue
+        return candidates, pid_bootstrapped
+
     def _sweep_masterchef_logs(
         self,
         w3: Web3,
@@ -235,6 +309,7 @@ class PositionIndex:
         positions: dict[int, PositionSnapshot],
         last_synced_block: int,
         legacy: dict | None = None,
+        db_snapshot: dict | None = None,
         sync: dict | None = None,
     ) -> None:
         sync = sync or {}
@@ -248,6 +323,9 @@ class PositionIndex:
                 "swept_logs": bool(sync.get("swept_logs", False)),
                 "historical_skipped": bool(sync.get("historical_skipped", False)),
                 "cached_block": sync.get("cached_block", 0),
+                "db_block": sync.get("db_block", 0),
+                "db_token_count": sync.get("db_token_count", 0),
+                "db_pid_bootstrapped": bool(sync.get("db_pid_bootstrapped", False)),
                 "legacy_block": sync.get("legacy_block", 0),
                 "legacy_token_count": sync.get("legacy_token_count", 0),
                 "bootstrap_start_block": pool.bootstrap_start_block,
@@ -260,6 +338,13 @@ class PositionIndex:
                 "source": legacy.get("source") if legacy else None,
                 "last_synced_block": legacy.get("last_synced_block") if legacy else 0,
                 "candidate_count": len(legacy.get("token_ids", [])) if legacy else 0,
+            },
+            "db_bootstrap": {
+                "enabled": self.use_db_cache,
+                "source": db_snapshot.get("source") if db_snapshot else None,
+                "last_synced_block": db_snapshot.get("last_synced_block") if db_snapshot else 0,
+                "candidate_count": len(db_snapshot.get("token_ids", [])) if db_snapshot else 0,
+                "pid_bootstrapped": bool(db_snapshot.get("pid_bootstrapped", False)) if db_snapshot else False,
             },
             "positions": {
                 str(token_id): {
