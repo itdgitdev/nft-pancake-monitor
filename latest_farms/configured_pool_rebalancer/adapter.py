@@ -264,65 +264,109 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             from config import RPC_URLS_2
 
         swapper = V3Swapper(self.pool.chain, RPC_URLS_2.get(self.pool.chain))
-        quote = swapper.get_best_swap_route(
-            token_in,
-            token_out,
-            amount_in,
-            Web3.to_checksum_address(self.pool.bot_wallet),
-            self.pool.slippage_bps,
-        )
-        if not quote:
+        wallet = Web3.to_checksum_address(self.pool.bot_wallet)
+        if hasattr(swapper, "get_swap_routes"):
+            quotes = swapper.get_swap_routes(
+                token_in,
+                token_out,
+                amount_in,
+                wallet,
+                self.pool.slippage_bps,
+            )
+        else:  # pragma: no cover - compatibility for older test doubles
+            best_quote = swapper.get_best_swap_route(token_in, token_out, amount_in, wallet, self.pool.slippage_bps)
+            quotes = [best_quote] if best_quote else []
+        if not quotes:
             return None
-        log_block(
-            log,
-            logging.INFO,
-            "swap quote selected",
-            pool_context(self.pool),
-            {
-                "stage": "quote",
-                "action": "swap",
+        simulation_errors = []
+        rejected_reasons = []
+        for quote in quotes:
+            log_block(
+                log,
+                logging.INFO,
+                "swap quote selected",
+                pool_context(self.pool),
+                {
+                    "stage": "quote",
+                    "action": "swap",
+                    "provider": quote.get("provider"),
+                    "route": quote.get("route_display"),
+                    "token_in": Web3.to_checksum_address(token_in),
+                    "token_out": Web3.to_checksum_address(token_out),
+                    "amount_in_raw": amount_in,
+                    "quote_buy_amount_raw": quote.get("buyAmount"),
+                    "price_impact": quote.get("price_impact"),
+                    "allowance_target": quote.get("allowanceTarget"),
+                    "estimated_gas": quote.get("estimatedGas"),
+                },
+            )
+            try:
+                price_impact = float(quote.get("price_impact", 0) or 0)
+            except (TypeError, ValueError):
+                price_impact = 0.0
+            if price_impact > self.pool.max_swap_price_impact_pct:
+                reason = f"price impact {price_impact} exceeds cap {self.pool.max_swap_price_impact_pct}"
+                rejected_reasons.append(f"{quote.get('provider')}: {reason}")
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "swap quote rejected",
+                    pool_context(self.pool),
+                    {
+                        "stage": "quote",
+                        "status": "REJECTED",
+                        "provider": quote.get("provider"),
+                        "route": quote.get("route_display"),
+                        "reason": reason,
+                        "next_action": "try next swap route",
+                    },
+                )
+                continue
+            dust_result = self._dust_output_result(token_out, quote)
+            if dust_result:
+                return dust_result
+            allowance_target = quote.get("allowanceTarget")
+            if allowance_target:
+                self.approve_if_needed(token_in, allowance_target, amount_in)
+            tx = {
+                "to": Web3.to_checksum_address(quote["to"]),
+                "data": quote["data"],
+                "value": self._quote_value_int(quote.get("value", 0)),
+            }
+            metadata = {
+                "label": "swap",
                 "provider": quote.get("provider"),
-                "token_in": Web3.to_checksum_address(token_in),
-                "token_out": Web3.to_checksum_address(token_out),
-                "amount_in_raw": amount_in,
-                "quote_buy_amount_raw": quote.get("buyAmount"),
-                "price_impact": quote.get("price_impact"),
+                "route_display": quote.get("route_display"),
                 "allowance_target": quote.get("allowanceTarget"),
                 "estimated_gas": quote.get("estimatedGas"),
-            },
-        )
-        if float(quote.get("price_impact", 0)) > self.pool.max_swap_price_impact_pct:
-            log.warning(
-                "swap quote rejected by price impact pool=%s chain=%s provider=%s price_impact=%s max_allowed=%s",
-                self.pool.name,
-                self.pool.chain,
-                quote.get("provider"),
-                quote.get("price_impact"),
-                self.pool.max_swap_price_impact_pct,
+                "token_in": Web3.to_checksum_address(token_in),
+                "token_out": Web3.to_checksum_address(token_out),
+                "amount_in": str(int(amount_in)),
+                "quote_buy_amount": str(int(quote.get("buyAmount") or 0)),
+                "price_impact": quote.get("price_impact"),
+            }
+            simulation_ok, simulation_reason = self._simulate_swap(tx, metadata)
+            if not simulation_ok:
+                simulation_errors.append(f"{quote.get('provider')}: {simulation_reason}")
+                continue
+            # Web3 fallback helpers cannot carry data reliably across versions, so
+            # build the raw transaction through the account API.
+            return self._send_raw_swap(tx, metadata=metadata)
+        if simulation_errors:
+            return TxResult(
+                tx_hash="failed:swap-simulation",
+                status="FAILED",
+                metadata={
+                    "label": "swap",
+                    "token_in": Web3.to_checksum_address(token_in),
+                    "token_out": Web3.to_checksum_address(token_out),
+                    "amount_in": str(int(amount_in)),
+                    "error": "all swap routes failed simulation",
+                    "simulation_errors": simulation_errors,
+                    "quote_rejections": rejected_reasons,
+                },
             )
-            return None
-        dust_result = self._dust_output_result(token_out, quote)
-        if dust_result:
-            return dust_result
-        allowance_target = quote.get("allowanceTarget")
-        if allowance_target:
-            self.approve_if_needed(token_in, allowance_target, amount_in)
-        tx = {
-            "to": Web3.to_checksum_address(quote["to"]),
-            "data": quote["data"],
-            "value": int(quote.get("value", 0)),
-        }
-        metadata = {
-            "label": "swap",
-            "token_in": Web3.to_checksum_address(token_in),
-            "token_out": Web3.to_checksum_address(token_out),
-            "amount_in": str(int(amount_in)),
-            "quote_buy_amount": str(int(quote.get("buyAmount") or 0)),
-            "price_impact": quote.get("price_impact"),
-        }
-        # Web3 fallback helpers cannot carry data reliably across versions, so
-        # build the raw transaction through the account API.
-        return self._send_raw_swap(tx, metadata=metadata)
+        return None
 
     def mint(self, plan) -> tuple[TxResult, int | None]:
         self.approve_if_needed(self.pool.token0_address, self.npm_address, plan.amount0_desired)
@@ -820,6 +864,58 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             return None
         return self.executor.send(self.npm.functions.burn(int(token_id)), "burn", gas=180000)
 
+    def _simulate_swap(self, tx_payload: dict, metadata: dict) -> tuple[bool, str | None]:
+        wallet = Web3.to_checksum_address(self.pool.bot_wallet)
+        call_tx = {
+            "from": wallet,
+            "to": tx_payload["to"],
+            "data": tx_payload["data"],
+            "value": tx_payload["value"],
+        }
+        try:
+            self.w3.eth.call(call_tx)
+        except Exception as exc:
+            reason = str(exc)
+            log_block(
+                log,
+                logging.WARNING,
+                "swap simulation",
+                pool_context(self.pool),
+                {
+                    "stage": "swap_simulation",
+                    "status": "FAILED",
+                    "provider": metadata.get("provider"),
+                    "route": metadata.get("route_display"),
+                    "token_in": metadata.get("token_in"),
+                    "token_out": metadata.get("token_out"),
+                    "amount_in_raw": metadata.get("amount_in"),
+                    "to": tx_payload.get("to"),
+                    "value": tx_payload.get("value"),
+                    "reason": reason,
+                    "next_action": "try next swap route",
+                },
+            )
+            return False, reason
+        log_block(
+            log,
+            logging.INFO,
+            "swap simulation",
+            pool_context(self.pool),
+            {
+                "stage": "swap_simulation",
+                "status": "PASSED",
+                "provider": metadata.get("provider"),
+                "route": metadata.get("route_display"),
+                "token_in": metadata.get("token_in"),
+                "token_out": metadata.get("token_out"),
+                "amount_in_raw": metadata.get("amount_in"),
+                "to": tx_payload.get("to"),
+                "value": tx_payload.get("value"),
+                "next_action": "broadcast simulated route",
+            },
+        )
+        return True, None
+
     def _send_raw_swap(self, tx_payload: dict, metadata: dict | None = None) -> TxResult:
         from .evm import get_chain_id, get_gas_params, validate_gas_cap
 
@@ -834,24 +930,32 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         gas_params = get_gas_params(self.w3, self.pool.chain, action="swap", policy=gas_policy)
         cap = gas_policy.max_fee_gwei if gas_policy.max_fee_gwei is not None else self.pool.max_gas_gwei
         validate_gas_cap(gas_params, cap)
-        gas_limit = 600000
+        gas_limit = 900000
+        provider_estimated_gas = self._safe_int(metadata.get("estimated_gas"))
+        rpc_estimated_gas = 0
+        gas_source = "fallback"
         try:
-            gas_limit = max(
-                120000,
-                int(
-                    self.w3.eth.estimate_gas(
-                        {
-                            "from": wallet,
-                            "to": tx_payload["to"],
-                            "data": tx_payload["data"],
-                            "value": tx_payload["value"],
-                        }
-                    )
-                    * 1.3
-                ),
+            rpc_estimated_gas = int(
+                self.w3.eth.estimate_gas(
+                    {
+                        "from": wallet,
+                        "to": tx_payload["to"],
+                        "data": tx_payload["data"],
+                        "value": tx_payload["value"],
+                    }
+                )
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            metadata["rpc_estimate_error"] = str(exc)
+        best_estimate = max(provider_estimated_gas, rpc_estimated_gas)
+        if best_estimate > 0:
+            gas_limit = max(120000, int(best_estimate * 1.3))
+            if provider_estimated_gas > 0 and rpc_estimated_gas > 0:
+                gas_source = "provider+rpc"
+            elif rpc_estimated_gas > 0:
+                gas_source = "rpc"
+            else:
+                gas_source = "provider"
         tx = {
             "from": wallet,
             "to": tx_payload["to"],
@@ -866,6 +970,9 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             "chain_id": tx["chainId"],
             "nonce": tx["nonce"],
             "gas_limit": gas_limit,
+            "gas_source": gas_source,
+            "provider_estimated_gas": provider_estimated_gas or None,
+            "rpc_estimated_gas": rpc_estimated_gas or None,
             "to": tx["to"],
             "value": str(tx["value"]),
             "data_length": len(str(tx["data"] or "")),
@@ -898,6 +1005,9 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                 "value": tx["value"],
                 "nonce": tx["nonce"],
                 "gas_limit": gas_limit,
+                "gas_source": metadata.get("gas_source"),
+                "provider_estimated_gas": metadata.get("provider_estimated_gas"),
+                "rpc_estimated_gas": metadata.get("rpc_estimated_gas"),
                 "max_fee_gwei": f"{metadata['max_fee_per_gas_gwei']:.9f}",
                 "priority_fee_gwei": f"{metadata['max_priority_fee_per_gas_gwei']:.9f}",
                 "data_length": metadata["data_length"],
@@ -997,6 +1107,10 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             tx_hash_hex = tx_hash.hex()
             if not tx_hash_hex.startswith("0x"):
                 tx_hash_hex = "0x" + tx_hash_hex
+            gas_used = int(receipt.get("gasUsed") or 0)
+            gas_used_ratio = (gas_used / gas_limit) if gas_limit else 0.0
+            revert_classification = self._classify_swap_revert(gas_used, gas_limit)
+            error_reason = f"swap transaction reverted: {revert_classification}"
             log_block(
                 log,
                 logging.WARNING,
@@ -1007,7 +1121,12 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                     "status": "SWAP_BLOCKED",
                     "tx_hash": tx_hash_hex,
                     "block": receipt.get("blockNumber"),
-                    "gas_used": receipt.get("gasUsed"),
+                    "provider": metadata.get("provider"),
+                    "route": metadata.get("route_display"),
+                    "gas_used": gas_used,
+                    "gas_limit": gas_limit,
+                    "gas_used_ratio": f"{gas_used_ratio:.4f}",
+                    "revert_classification": revert_classification,
                     "reason": "execution reverted",
                     "next_action": "recovery will retry swap from reservation",
                 },
@@ -1015,8 +1134,13 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             return TxResult(
                 tx_hash=tx_hash_hex,
                 status="FAILED",
-                gas_used=int(receipt.get("gasUsed") or 0),
-                metadata={**metadata, "error": "swap transaction reverted"},
+                gas_used=gas_used,
+                metadata={
+                    **metadata,
+                    "error": error_reason,
+                    "revert_classification": revert_classification,
+                    "gas_used_ratio": gas_used_ratio,
+                },
             )
         effective_gas_price = int(receipt.get("effectiveGasPrice") or gas_params["maxFeePerGas"])
         tx_hash_hex = tx_hash.hex()
@@ -1054,6 +1178,30 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                 ),
             },
         )
+
+    @staticmethod
+    def _classify_swap_revert(gas_used: int, gas_limit: int) -> str:
+        if gas_limit > 0 and gas_used / gas_limit >= 0.98:
+            return "OUT_OF_GAS_LIKELY"
+        return "ROUTE_OR_SLIPPAGE_REVERT"
+
+    @staticmethod
+    def _quote_value_int(value) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, int):
+            return value
+        text = str(value).strip()
+        if not text:
+            return 0
+        return int(text, 0)
+
+    @staticmethod
+    def _safe_int(value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _web3_for_rpc(self, url: str) -> Web3:
         w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 30}))

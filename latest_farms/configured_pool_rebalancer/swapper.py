@@ -255,6 +255,21 @@ class V3Swapper:
         user_address: str,
         slippage_bps: int = 50,
     ) -> dict | None:
+        routes = self.get_swap_routes(token_in, token_out, amount_in_wei, user_address, slippage_bps)
+        if not routes:
+            return None
+        best_quote = routes[0]
+        log.info("best swap route chain=%s provider=%s buy_amount=%s", self.chain_name, best_quote["provider"], best_quote["buyAmount"])
+        return best_quote
+
+    def get_swap_routes(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_in_wei: int,
+        user_address: str,
+        slippage_bps: int = 50,
+    ) -> list[dict]:
         quotes = []
         kyber_route = self.get_kyber_route(token_in, token_out, amount_in_wei)
         if kyber_route:
@@ -273,10 +288,15 @@ class V3Swapper:
 
         valid_quotes = [quote for quote in quotes if self._quote_is_usable(quote)]
         if not valid_quotes:
-            return None
-        best_quote = max(valid_quotes, key=lambda item: int(item["buyAmount"]))
-        log.info("best swap route chain=%s provider=%s buy_amount=%s", self.chain_name, best_quote["provider"], best_quote["buyAmount"])
-        return best_quote
+            return []
+        valid_quotes.sort(key=lambda item: int(item["buyAmount"]), reverse=True)
+        log.info(
+            "swap routes found chain=%s count=%s providers=%s",
+            self.chain_name,
+            len(valid_quotes),
+            ",".join(str(quote.get("provider")) for quote in valid_quotes),
+        )
+        return valid_quotes
 
     def _kyber_quote(self, kyber_tx: dict, route_summary: dict) -> dict:
         impact = 0.0
