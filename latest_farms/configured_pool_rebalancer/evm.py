@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import logging
+from urllib.parse import urlparse
 
 from web3 import Web3
 
@@ -13,9 +15,13 @@ except ImportError:  # pragma: no cover - allows running from latest_farms cwd
     from config import CHAIN_ID_MAP, RPC_BACKUP_LIST, RPC_URLS_2
 
 
+log = logging.getLogger("configured_pool_rebalancer")
+
+
 def web3_connection(chain: str, timeout: int = 30) -> Web3:
     urls = [RPC_URLS_2.get(chain)] + RPC_BACKUP_LIST.get(chain, [])
     for url in [item for item in urls if item]:
+        rpc_label = _rpc_label(url)
         try:
             w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": timeout}))
             if chain == "BNB":
@@ -28,10 +34,21 @@ def web3_connection(chain: str, timeout: int = 30) -> Web3:
 
                     w3.middleware_onion.inject(geth_poa_middleware, layer=0)
             if w3.is_connected():
+                log.info("rpc selected chain=%s rpc=%s", chain, rpc_label)
                 return w3
-        except Exception:
+            log.warning("rpc connection unavailable chain=%s rpc=%s", chain, rpc_label)
+        except Exception as exc:
+            log.warning("rpc connection failed chain=%s rpc=%s error=%s", chain, rpc_label, exc)
             time.sleep(0.5)
     raise RuntimeError(f"No working RPC for chain={chain}")
+
+
+def _rpc_label(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc or "unknown-rpc"
+    except Exception:
+        return "unknown-rpc"
 
 
 def get_chain_id(chain: str) -> int:

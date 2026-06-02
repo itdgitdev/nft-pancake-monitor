@@ -95,18 +95,18 @@ RPC_URLS = {
     "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA}",
 }
 
-API_KEY_INFURA_1 = "92cf6964acae46008404ef57df3020b7"
-API_KEY_INFURA_2 = "afb06acf1c3542aca75c89203c9f9a28"
-API_KEY_INFURA_3 = "b0cdf677b6fc411297e25fd395fec257"
+API_KEY_INFURA_1 = "afb06acf1c3542aca75c89203c9f9a28"
+API_KEY_INFURA_2 = "18a1946eec9d4e8cb7a08516809a4cdb"
+API_KEY_INFURA_3 = "bad651c85f224ff59de5a4bd9c90aa30"
 RPC_URLS_2 = {
-    "BNB": f"https://bsc-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
-    "ETH": f"https://mainnet.infura.io/v3/{API_KEY_INFURA_3}",
+    "BNB": f"https://bsc-mainnet.infura.io/v3/{API_KEY_INFURA_1}",
+    "ETH": f"https://mainnet.infura.io/v3/{API_KEY_INFURA_2}",
     "BAS": f"https://base-mainnet.infura.io/v3/{API_KEY_INFURA_3}",
     "ARB": f"https://arbitrum-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
     "LIN": f"https://linea-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
     "POL": f"https://zkevm-rpc.com",
     "ERA": f"https://zksync-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
-    "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA_3}",
+    "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
 }
 
 ALCHEMY_API_KEY = "xA7-sWnseDzu0v8MsC6J9GpilYRgMtqW"

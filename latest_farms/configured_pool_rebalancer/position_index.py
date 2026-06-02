@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 from web3 import Web3
 
@@ -19,9 +21,21 @@ WITHDRAW_TOPIC = "0x" + Web3.keccak(text="Withdraw(address,address,uint256,uint2
 POOL_CREATED_TOPIC = "0x" + Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)").hex()
 
 try:
-    from latest_farms.config import FACTORY_ADDRESSES, FACTORY_DEPLOYED_BLOCK, MASTERCHEF_DEPLOYED_BLOCK
+    from latest_farms.config import (
+        FACTORY_ADDRESSES,
+        FACTORY_DEPLOYED_BLOCK,
+        MASTERCHEF_DEPLOYED_BLOCK,
+        RPC_BACKUP_LIST,
+        RPC_URLS_2,
+    )
 except ImportError:  # pragma: no cover
-    from config import FACTORY_ADDRESSES, FACTORY_DEPLOYED_BLOCK, MASTERCHEF_DEPLOYED_BLOCK
+    from config import (
+        FACTORY_ADDRESSES,
+        FACTORY_DEPLOYED_BLOCK,
+        MASTERCHEF_DEPLOYED_BLOCK,
+        RPC_BACKUP_LIST,
+        RPC_URLS_2,
+    )
 
 
 class PositionIndex:
@@ -57,6 +71,7 @@ class PositionIndex:
         if from_block <= latest_block:
             staked, unstaked = self._sweep_masterchef_logs(
                 w3,
+                pool,
                 adapter.masterchef_address,
                 from_block,
                 latest_block,
@@ -263,6 +278,7 @@ class PositionIndex:
     def _sweep_masterchef_logs(
         self,
         w3: Web3,
+        pool: PoolConfig,
         masterchef_address: str,
         from_block: int,
         to_block: int,
@@ -270,16 +286,16 @@ class PositionIndex:
     ) -> tuple[set[int], set[int]]:
         staked: set[int] = set()
         unstaked: set[int] = set()
+        rpc_sources = self._log_rpc_sources(w3, pool)
         for start in range(from_block, to_block + 1, chunk_size):
             end = min(start + chunk_size - 1, to_block)
-            logs = w3.eth.get_logs(
-                {
-                    "fromBlock": start,
-                    "toBlock": end,
-                    "address": Web3.to_checksum_address(masterchef_address),
-                    "topics": [[DEPOSIT_TOPIC, WITHDRAW_TOPIC]],
-                }
-            )
+            query = {
+                "fromBlock": start,
+                "toBlock": end,
+                "address": Web3.to_checksum_address(masterchef_address),
+                "topics": [[DEPOSIT_TOPIC, WITHDRAW_TOPIC]],
+            }
+            logs = self._get_logs_with_rpc_fallback(rpc_sources, pool, start, end, query)
             for event in logs:
                 topic0 = Web3.to_hex(event["topics"][0]).lower()
                 if len(event["topics"]) < 4:
@@ -292,6 +308,95 @@ class PositionIndex:
                     unstaked.add(token_id)
                     staked.discard(token_id)
         return staked, unstaked
+
+    def _get_logs_with_rpc_fallback(
+        self,
+        rpc_sources: list[tuple[str, Web3]],
+        pool: PoolConfig,
+        from_block: int,
+        to_block: int,
+        query: dict,
+    ) -> list:
+        last_error: Exception | None = None
+        for rpc_label, candidate_w3 in rpc_sources:
+            attempts = 2 if rpc_label == "primary" else 1
+            for attempt in range(1, attempts + 1):
+                try:
+                    logs = candidate_w3.eth.get_logs(query)
+                    if rpc_label != "primary" or attempt > 1:
+                        log.info(
+                            "masterchef log sweep recovered pool=%s chain=%s rpc=%s attempt=%s from_block=%s to_block=%s logs=%s",
+                            pool.name,
+                            pool.chain,
+                            rpc_label,
+                            attempt,
+                            from_block,
+                            to_block,
+                            len(logs),
+                        )
+                    return logs
+                except Exception as exc:
+                    last_error = exc
+                    log.warning(
+                        "masterchef log sweep failed pool=%s chain=%s rpc=%s attempt=%s/%s from_block=%s to_block=%s error=%s",
+                        pool.name,
+                        pool.chain,
+                        rpc_label,
+                        attempt,
+                        attempts,
+                        from_block,
+                        to_block,
+                        exc,
+                    )
+                    if attempt < attempts:
+                        time.sleep(min(2.0, 0.5 * attempt))
+        log.error(
+            "masterchef log sweep failed on all rpc attempts pool=%s chain=%s from_block=%s to_block=%s attempts=%s last_error=%s",
+            pool.name,
+            pool.chain,
+            from_block,
+            to_block,
+            len(rpc_sources),
+            last_error,
+        )
+        if last_error:
+            raise last_error
+        raise RuntimeError("masterchef log sweep failed without rpc attempts")
+
+    def _log_rpc_sources(self, w3: Web3, pool: PoolConfig) -> list[tuple[str, Web3]]:
+        sources = [("primary", w3)]
+        current_url = getattr(getattr(w3, "provider", None), "endpoint_uri", None)
+        seen = {current_url} if current_url else set()
+        rpc_urls = [RPC_URLS_2.get(pool.chain)] + RPC_BACKUP_LIST.get(pool.chain, [])
+        fallback_index = 1
+        for url in [item for item in rpc_urls if item]:
+            if url in seen:
+                continue
+            seen.add(url)
+            sources.append((f"fallback-{fallback_index}:{self._rpc_label(url)}", self._web3_for_rpc(pool, url)))
+            fallback_index += 1
+        return sources
+
+    def _web3_for_rpc(self, pool: PoolConfig, url: str) -> Web3:
+        candidate = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 30}))
+        if pool.chain.upper() == "BNB":
+            try:
+                from web3.middleware import ExtraDataToPOAMiddleware
+
+                candidate.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+            except ImportError:
+                from web3.middleware import geth_poa_middleware
+
+                candidate.middleware_onion.inject(geth_poa_middleware, layer=0)
+        return candidate
+
+    @staticmethod
+    def _rpc_label(url: str) -> str:
+        try:
+            parsed = urlparse(url)
+            return parsed.netloc or "unknown-rpc"
+        except Exception:
+            return "unknown-rpc"
 
     def _path(self, pool: PoolConfig) -> Path:
         return self.cache_dir / f"{pool.chain}_{pool.pool_address.lower()}.json"
