@@ -32,7 +32,7 @@ In v2, shared wallet and pool settings are defined once:
   "wallets": {
     "main": {
       "bot_wallet": "0x...",
-      "private_key_env": "PARASITE_BOT_PRIVATE_KEY"
+      "private_key_prefix_env": "CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX"
     }
   },
   "pool_defaults": {
@@ -91,6 +91,40 @@ Create journal tables and run live:
 ```powershell
 python -m latest_farms.configured_pool_rebalancer.cli --config path\to\config.json --migrate --execute
 ```
+
+Live runs reconstruct each distinct `bot_wallet` private key from two hexadecimal segments:
+
+- The first 54 characters are read from the environment variable named by `private_key_prefix_env`.
+- The last 10 characters are entered through a hidden terminal prompt.
+
+The 64-character key does not include the optional `0x` prefix. For example, configure a wallet with:
+
+```json
+{
+  "bot_wallet": "0x...",
+  "private_key_prefix_env": "CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX"
+}
+```
+
+Then store only the first 54 characters in the project-root `.env` file:
+
+```dotenv
+CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX=<54_HEX_CHARACTERS>
+```
+
+The CLI loads `.env` without overriding variables already present in the process environment. It validates every prefix
+before prompting, then verifies that the reconstructed key matches `bot_wallet`. The prefix, suffix, and reconstructed
+key are never logged; the reconstructed key is kept only in process memory. Do not use this split-key arrangement for a
+primary wallet or a wallet holding material funds.
+
+Run an interactive live session every `interval_seconds` seconds (30 minutes by default):
+
+```powershell
+python -m latest_farms.configured_pool_rebalancer.cli --config path\to\config.json --migrate --execute --loop
+```
+
+Use Task Scheduler only for dry-run/report jobs. Live execution requires an interactive terminal so the operator can
+enter the last 10 private-key characters.
 
 Generate a PnL report only:
 
@@ -177,10 +211,48 @@ This means the new range is approximately current price minus 9% to current pric
 
 Configured percentages are treated as the target strategy. After minting, the journal stores the actual lower/upper percentages derived from the aligned minted ticks, so future fallback behavior reflects the real on-chain range.
 
+## Fee auto-compounding
+
+Auto-compounding is disabled by default and is configured per pool (or through `pool_defaults`):
+
+```json
+{
+  "auto_compound": {
+    "enabled": true,
+    "min_interval_seconds": 21600,
+    "min_compound_usd": 5.0,
+    "gas_cost_multiplier": 3.0,
+    "min_range_buffer_ratio": 0.1,
+    "max_jobs_per_cycle": 1
+  }
+}
+```
+
+Aerodrome pools may declare `"position_strategy": "farm"` or `"fee"`. This value is advisory: the worker
+logs a `STRATEGY_MISMATCH` but never stakes or unstakes an in-range NFT to enforce the setting. Pancake's
+expected strategy is inferred from `pid`, while actual on-chain custody always controls contract routing.
+
+For Aerodrome, `pool_address` is the only required protocol metadata address. The adapter resolves
+`nft()` (NPM), `gauge()`, token addresses, fee, and tick spacing from the pool in a metadata Multicall.
+Legacy `npm_address`, `staking_address`, token, fee, and tick-spacing fields remain supported as assertions
+or verified fallbacks. See `sample_aerodrome_config.json` for a minimal example.
+
+When enabled, each cycle runs the existing rebalance pass first. Eligible in-range positions then follow
+`collect fee -> reprice -> swap excess -> increaseLiquidity`. Pancake positions may be staked or unstaked;
+Aerodrome positions must be unstaked. Farm rewards, principal withdrawals, range changes, NFT mint/burn, and
+wallet balances outside the compound reservation are never used.
+
+The rebalance position index discovers both staked and wallet-owned NFTs. Auto-compound consumes that in-range
+handoff and only revalidates each token ID; it does not enumerate the NPM or scan position caches a second time.
+
+Run once with `--migrate` before enabling live execution so `configured_compound_jobs` and the rebalance
+`restore_stake_mode` field exist. Dry-run performs
+discovery, fee/profitability evaluation, swap quoting, and transaction simulation without creating a compound job.
+
 ## Notes
 
-- V1 implements PancakeSwap V3 MasterChef style staking.
-- Aerodrome adapter is intentionally reserved for the next phase.
+- PancakeSwap V3 supports both MasterChef-staked and wallet-owned positions.
+- Aerodrome supports gauge-staked rebalancing and wallet-owned fee compounding; gauge-staked positions are skipped by auto-compound.
 - `use_legacy_position_cache` is enabled by default to avoid a large first log sweep. Use `seed_token_ids` for canary runs or for positions missing from the legacy cache.
 - Live execution requires `bot_wallet` to be the owner/user of the position being rebalanced. For multiple user wallets on the same pool, create one pool config entry per signer/private key.
 - `--pnl-report` is read-only from the database perspective: it does not rebalance, migrate, or send transactions.

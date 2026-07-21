@@ -87,19 +87,19 @@ CLI
 
 ## 3. Thành Phần Chính
 
-| File                    | Vai trò                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------- |
-| `cli.py`              | Entry point, parse CLI flags, chạy rebalance hoặc PnL report.               |
-| `settings.py`         | Đọc JSON config, merge `wallets` + `pool_defaults`, validate giá trị. |
-| `models.py`           | Định nghĩa config, position, plan, tx result, status.                      |
-| `worker.py`           | Điều phối toàn bộ flow rebalance, recovery, Discord notify.              |
-| `position_index.py`   | Tìm staked NFT position từ cache, seed token id hoặc MasterChef logs.      |
-| `planner.py`          | Tính range mới, amount mint và swap plan.                                  |
-| `adapter.py`          | Gọi contract PancakeSwap V3 MasterChef, NPM, ERC20 và swapper.              |
-| `tx_executor.py`      | Build, sign, send transaction, quản lý nonce và gas.                       |
-| `journal.py`          | Ghi trạng thái job, tx hash, snapshot balance và reservation ledger.       |
-| `pnl_report.py`       | Tạo PnL report JSON/CSV, tính gas từ DB hoặc RPC receipt.                 |
-| `discord_notifier.py` | Gửi PnL, pending snapshot và recovery required lên Discord.                |
+| File                    | Vai trò                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `cli.py`              | Entry point, parse CLI flags, chạy rebalance hoặc PnL report.              |
+| `settings.py`         | Đọc JSON config, merge`wallets` + `pool_defaults`, validate giá trị. |
+| `models.py`           | Định nghĩa config, position, plan, tx result, status.                     |
+| `worker.py`           | Điều phối toàn bộ flow rebalance, recovery, Discord notify.             |
+| `position_index.py`   | Tìm staked NFT position từ cache, seed token id hoặc MasterChef logs.     |
+| `planner.py`          | Tính range mới, amount mint và swap plan.                                 |
+| `adapter.py`          | Gọi contract PancakeSwap V3 MasterChef, NPM, ERC20 và swapper.             |
+| `tx_executor.py`      | Build, sign, send transaction, quản lý nonce và gas.                      |
+| `journal.py`          | Ghi trạng thái job, tx hash, snapshot balance và reservation ledger.      |
+| `pnl_report.py`       | Tạo PnL report JSON/CSV, tính gas từ DB hoặc RPC receipt.                |
+| `discord_notifier.py` | Gửi PnL, pending snapshot và recovery required lên Discord.               |
 
 ## 4. Cách Tìm Position
 
@@ -188,13 +188,13 @@ Nếu ví còn `60 USDC`, recovery có thể tiếp tục. Nếu ví chỉ còn 
 
 Policy recovery hiện tại:
 
-| Trạng thái job                          | Cách recovery                                                             |
-| ----------------------------------------- | -------------------------------------------------------------------------- |
-| Withdraw xong, chưa có `swap_tx_hash` | Được phép swap nếu planner thấy cần.                                |
-| Đã có `swap_tx_hash` thật           | Reconcile reservation từ swap receipt nếu cần, sau đó không swap thêm và chỉ mint từ reservation sau swap. |
-| Mint xong nhưng stake lỗi               | Kiểm tra NFT mới thuộc bot wallet và đúng pool, sau đó stake lại. |
-| Thiếu reservation ledger                 | Không tự recovery, yêu cầu xử lý thủ công.                         |
-| Ví không đủ cover tổng reservation   | Không swap/mint, gửi recovery required nếu bật Discord.                |
+| Trạng thái job                         | Cách recovery                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Withdraw xong, chưa có`swap_tx_hash` | Được phép swap nếu planner thấy cần.                                                                          |
+| Đã có`swap_tx_hash` thật           | Reconcile reservation từ swap receipt nếu cần, sau đó không swap thêm và chỉ mint từ reservation sau swap. |
+| Mint xong nhưng stake lỗi              | Kiểm tra NFT mới thuộc bot wallet và đúng pool, sau đó stake lại.                                           |
+| Thiếu reservation ledger                | Không tự recovery, yêu cầu xử lý thủ công.                                                                   |
+| Ví không đủ cover tổng reservation  | Không swap/mint, gửi recovery required nếu bật Discord.                                                          |
 
 Điểm quan trọng: nếu user đổi `rebalance_range` sau khi job partial, recovery có thể dùng range hiện tại để mint. Tuy nhiên nếu job đã swap thành công, worker sẽ reconcile từ `swap_tx_hash` rồi không swap thêm, nên không phát sinh swap lặp cho cùng một job.
 
@@ -226,7 +226,7 @@ Config nên dùng dạng v2:
   "wallets": {
     "main": {
       "bot_wallet": "0x...",
-      "private_key_env": "PARASITE_BOT_PRIVATE_KEY"
+      "private_key_prefix_env": "CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX"
     }
   },
   "pool_defaults": {
@@ -258,7 +258,7 @@ Config nên dùng dạng v2:
 Field quan trọng:
 
 - `dry_run`: để `true` khi test. CLI `--execute` sẽ override thành live-run.
-- `wallets`: khai báo wallet và tên biến môi trường chứa private key.
+- `wallets`: khai báo wallet và `private_key_prefix_env`; live-run đọc prefix 54 ký tự từ env rồi prompt suffix 10 ký tự cuối tại terminal.
 - `use_legacy_position_cache`: local độc lập nên để `false`.
 - `pool_defaults`: cấu hình mặc định cho pool, nhưng không nên đặt `rebalance_range` ở đây.
 - `pools`: danh sách pool cần quản lý.
@@ -304,7 +304,7 @@ copy latest_farms\configured_pool_rebalancer\sample_config.json my_rebalance_con
 Sửa các field:
 
 - `bot_wallet`
-- `private_key_env`
+- `private_key_env` nếu còn trong config cũ vẫn bị bỏ qua; chỉ `private_key_prefix_env` được đọc để lấy 54 ký tự đầu.
 - `pool_address`
 - `chain`
 - `pid`
@@ -314,12 +314,14 @@ Sửa các field:
 
 Không ghi private key hoặc webhook thật vào file JSON.
 
-### Bước 2: Set private key bằng env
+### Bước 2: Chuẩn bị secret runtime
 
-Trong PowerShell hiện tại:
+Live-run đọc prefix 54 ký tự từ `private_key_prefix_env`, rồi prompt ẩn suffix 10 ký tự cuối cho từng `bot_wallet` khi chạy với `--execute`. Không lưu full private key trong `.env` hoặc PowerShell env.
 
-```powershell
-$env:PARASITE_BOT_PRIVATE_KEY="your_private_key"
+Ví dụ trong `.env` ở project root, không tính `0x` vào 64 ký tự của private key:
+
+```dotenv
+CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX=<54_HEX_CHARACTERS>
 ```
 
 Nếu bật Discord:
@@ -328,16 +330,15 @@ Nếu bật Discord:
 $env:CONFIGURED_REBALANCER_DISCORD_WEBHOOK="your_discord_webhook"
 ```
 
-Lưu ý: cách `$env:...` chỉ có hiệu lực trong PowerShell session hiện tại. Nếu chạy bằng Task Scheduler, nên set env ở cấp User/Machine hoặc load secret từ nơi an toàn.
+Lưu ý: chỉ prefix 54 ký tự được đặt trong biến `private_key_prefix_env`; không đặt full private key vào User/Machine env.
 
 Ví dụ set User env:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("PARASITE_BOT_PRIVATE_KEY", "your_private_key", "User")
 [Environment]::SetEnvironmentVariable("CONFIGURED_REBALANCER_DISCORD_WEBHOOK", "your_discord_webhook", "User")
 ```
 
-Sau khi set User env, hãy mở PowerShell mới hoặc restart Task Scheduler service nếu cần.
+Sau khi set User env cho Discord webhook, hãy mở PowerShell mới nếu cần.
 
 ### Bước 3: Chạy dry-run trước
 
@@ -358,6 +359,17 @@ Chỉ chạy khi dry-run đã ổn:
 
 ```powershell
 python -m latest_farms.configured_pool_rebalancer.cli --config my_rebalance_config.json --migrate --execute
+
+# hoặc để lưu log vào file cụ thể
+python -m latest_farms.configured_pool_rebalancer.cli --config my_rebalance_config.json --migrate --execute --loop > latest_farms\logs\configured_rebalancer_loop.log 2>&1
+```
+
+CLI sẽ yêu cầu nhập ẩn 10 ký tự cuối tại terminal trước khi worker gửi transaction. Key ghép từ prefix trong env và suffix này phải khớp `bot_wallet`, rồi chỉ được giữ trong RAM của process.
+
+Chạy live interactive loop 30 phút/lần theo `interval_seconds`:
+
+```powershell
+python -m latest_farms.configured_pool_rebalancer.cli --config my_rebalance_config.json --migrate --execute --loop
 ```
 
 `--migrate` tạo/cập nhật bảng journal. Nên dùng trong lần live-run đầu tiên và sau các bản update có thêm cột journal.
@@ -409,17 +421,17 @@ $env:PYTHONIOENCODING = "utf-8"
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 "[$timestamp] Starting configured_pool_rebalancer" | Out-File -FilePath $logFile -Append -Encoding utf8
 
-python -m latest_farms.configured_pool_rebalancer.cli --config my_rebalance_config.json --migrate --execute >> $logFile 2>&1
+python -m latest_farms.configured_pool_rebalancer.cli --config my_rebalance_config.json >> $logFile 2>&1
 
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 "[$timestamp] Done" | Out-File -FilePath $logFile -Append -Encoding utf8
 ```
 
-Không hardcode private key hoặc Discord webhook thật trong script. Hãy dùng env đã set ở cấp User/Machine hoặc secret manager nội bộ.
+Không hardcode private key hoặc Discord webhook thật trong script. Task Scheduler script chỉ nên chạy dry-run/report, không chạy `--execute`.
 
-### Bước 7: Chạy cronjob bằng Windows Task Scheduler
+### Bước 7: Chạy dry-run/report bằng Windows Task Scheduler
 
-Mục tiêu: dùng Windows Task Scheduler để chạy file:
+Mục tiêu: dùng Windows Task Scheduler để chạy dry-run/report không cần private key. Live execute định kỳ dùng interactive terminal với `--execute --loop`.
 
 ```text
 D:\python\nft_projects\run_configured_rebalancer.ps1
@@ -507,12 +519,12 @@ Kiểm tra sau khi tạo task:
 - Right click task -> **Run**.
 - Xem `latest_farms/logs/configured_rebalancer.log`.
 - Kiểm tra output có `Starting configured_pool_rebalancer` và `Done`.
-- Kiểm tra env private key/webhook có được Task Scheduler đọc thấy không.
+- Kiểm tra Discord webhook env có được Task Scheduler đọc thấy không nếu bật notify/report.
 
 Nếu task chạy được bằng PowerShell thường nhưng lỗi trong Task Scheduler, thường là do:
 
 - `Start in` chưa đặt đúng repo.
-- User chạy task chưa có env private key.
+- User chạy task chưa có env/config cần thiết cho dry-run/report.
 - Python path khác giữa interactive shell và scheduled task.
 - Task chạy song song khi job trước chưa xong.
 
@@ -684,17 +696,76 @@ recovery swap reservation reconciled
 
 ## 10. Lỗi Thường Gặp
 
-| Lỗi                            | Cách hiểu / cách xử lý                                                                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Không thấy position           | Kiểm tra cache,`seed_token_ids`, `bootstrap_start_block`, `auto_bootstrap_start_block`, `use_legacy_position_cache`.                                              |
-| Missing private key env         | Chưa set biến môi trường trong `private_key_env`.                                                                                                                   |
-| Signer mismatch                 | Position không thuộc `bot_wallet`; cần dùng đúng signer/owner.                                                                                                     |
-| Gas too high                    | Gas vượt `max_fee_gwei` hoặc `max_gas_gwei`; cần đổi policy hoặc chờ gas giảm.                                                                                |
-| Swap blocked                    | Quote không có, price impact cao, dust swap, gas/RPC hoặc tx lỗi.                                                                                                      |
-| Swap pending                    | Swap đã gửi nhưng worker chưa nhận receipt; lần sau sẽ kiểm tra lại.                                                                                             |
-| Post-swap balance not confirmed | RPC/balance sau swap chưa ổn định; nếu receipt log xác nhận token output thì worker vẫn có thể cập nhật reservation và đi tiếp.                              |
-| Recovery required               | Job partial không thể recovery an toàn; kiểm tra `error`, reservation và balance ví.                                                                               |
-| Missing reservation ledger      | Job cũ tạo trước bản reservation ledger; cần xử lý thủ công hoặc đóng journal nếu đã tạo position mới bằng tay.                                         |
-| Reservation coverage failed     | Ví không đủ token để cover tổng reservation. Nếu job đã có `swap_tx_hash`, kiểm tra log reconcile; reservation có thể được sửa tự động từ swap receipt. |
-| Missing PnL snapshot            | DB chưa có snapshot NFT mới; chờ indexer cập nhật rồi tạo report lại.                                                                                             |
-| PnL gas warning                 | Kiểm tra tx hash trong journal và bảng `transaction_history_v2_bk`/`transaction_history_v2`; hash có/không có `0x` đều được normalize ở bản hiện tại. |
+| Lỗi                            | Cách hiểu / cách xử lý                                                                                                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Không thấy position           | Kiểm tra cache,`seed_token_ids`, `bootstrap_start_block`, `auto_bootstrap_start_block`, `use_legacy_position_cache`.                                                  |
+| Missing runtime signer          | Live-run không có signer runtime; chạy qua CLI `--execute`, cấu hình prefix env và nhập suffix 10 ký tự.                                                             |
+| Private key mismatch            | Prefix và suffix ghép lại không khớp `bot_wallet`; kiểm tra prefix env và suffix 10 ký tự.                                                                           |
+| Signer mismatch                 | Position không thuộc`bot_wallet`; cần dùng đúng signer/owner.                                                                                                          |
+| Gas too high                    | Gas vượt`max_fee_gwei` hoặc `max_gas_gwei`; cần đổi policy hoặc chờ gas giảm.                                                                                     |
+| Swap blocked                    | Quote không có, price impact cao, dust swap, gas/RPC hoặc tx lỗi.                                                                                                          |
+| Swap pending                    | Swap đã gửi nhưng worker chưa nhận receipt; lần sau sẽ kiểm tra lại.                                                                                                 |
+| Post-swap balance not confirmed | RPC/balance sau swap chưa ổn định; nếu receipt log xác nhận token output thì worker vẫn có thể cập nhật reservation và đi tiếp.                                |
+| Recovery required               | Job partial không thể recovery an toàn; kiểm tra`error`, reservation và balance ví.                                                                                    |
+| Missing reservation ledger      | Job cũ tạo trước bản reservation ledger; cần xử lý thủ công hoặc đóng journal nếu đã tạo position mới bằng tay.                                             |
+| Reservation coverage failed     | Ví không đủ token để cover tổng reservation. Nếu job đã có`swap_tx_hash`, kiểm tra log reconcile; reservation có thể được sửa tự động từ swap receipt. |
+| Missing PnL snapshot            | DB chưa có snapshot NFT mới; chờ indexer cập nhật rồi tạo report lại.                                                                                                 |
+| PnL gas warning                 | Kiểm tra tx hash trong journal và bảng`transaction_history_v2_bk`/`transaction_history_v2`; hash có/không có `0x` đều được normalize ở bản hiện tại.      |
+
+## 11. Module Auto-Compound
+
+`auto_compound` là subsystem riêng nằm trong `configured_pool_rebalancer`, dùng để tự động compound trading fee của các position đã được rebalancer xác minh là in-range.
+
+Khi `auto_compound.enabled=false`, CLI vẫn chạy trực tiếp luồng rebalancing cũ. Khi bật feature, `ConfiguredPoolAutomationWorker` chạy theo thứ tự:
+
+```text
+reconcile pending compound tx
+-> run auto-rebalancer
+-> nhận handoff các position in-range
+-> revalidate token ID on-chain
+-> quote fee / kiểm tra điều kiện
+-> collect fee -> tính lại current price -> swap phần dư nếu cần -> increaseLiquidity
+```
+
+Nguyên tắc chính:
+
+- Chỉ dùng trading fee vừa collect, không harvest reward và không dùng principal/wallet balance có sẵn.
+- Pancake staked compound qua MasterChef; Pancake unstaked compound qua NPM.
+- Aerodrome chỉ compound khi position đang unstaked; Aerodrome staked trả `SKIPPED / STAKE_POLICY`.
+- Auto-compound không discovery full lần hai, chỉ nhận candidate in-range từ rebalancer rồi revalidate owner, pool identity, liquidity, range và stake mode hiện tại.
+- Rebalancing luôn ưu tiên trước compound; wallet có rebalance action/error/recovery hoặc pending compound nonce sẽ bị chặn compound trong cycle đó.
+- Job compound ghi vào bảng riêng `configured_compound_jobs`, không thay đổi journal/state machine của rebalancing.
+
+Config chính:
+
+```json
+"auto_compound": {
+  "enabled": true,
+  "min_interval_seconds": 21600,
+  "min_compound_usd": 3.0,
+  "gas_cost_multiplier": 3.0,
+  "min_range_buffer_ratio": 0.1,
+  "max_jobs_per_cycle": 1
+}
+```
+
+Điều kiện tối thiểu trước khi compound:
+
+- Position còn in-range và cách biên range đủ `min_range_buffer_ratio`.
+- Đã qua cooldown `min_interval_seconds` tính từ lần `COMPLETED` gần nhất.
+- Trading fee USD >= `min_compound_usd`.
+- Giá token và native gas token đọc được.
+- Giá trị tái đầu tư vượt ngưỡng gas: `fee/reinvestable value >= gas_cost_multiplier * estimated_gas_usd`.
+- Nếu cần swap, swap amount không phải dust và route đạt slippage/price-impact policy.
+
+Trạng thái/skip reason cần đọc trong output:
+
+| Kết quả | Ý nghĩa |
+| ------- | ------- |
+| `COMPLETED` | Đã collect fee, swap nếu cần và increaseLiquidity thành công. |
+| `BELOW_MIN_COMPOUND` | Fee chưa đạt ngưỡng USD, không gọi swap provider. |
+| `BELOW_GAS_PROFITABILITY` | Fee đủ ngưỡng tối thiểu nhưng không đáng để trả gas. |
+| `NO_REINVESTABLE_LIQUIDITY` | Fee hiện có không tạo được liquidity dương. |
+| `STAKE_POLICY` | Aerodrome đang staked nên không compound trading fee. |
+| `WAITING_FOR_SWAP` | Đã collect fee nhưng chưa thể swap/increase an toàn, sẽ replan cycle sau. |
+| `RECOVERY_REQUIRED` | Receipt/balance/event không khớp, cần kiểm tra thủ công. |

@@ -44,19 +44,20 @@ def push_position_cache_snapshot(
     chain: str,
     cache_dir: str | Path = DEFAULT_CACHE_DIR,
     source: str = DEFAULT_SOURCE,
+    cache_path: str | Path | None = None,
     logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     logger = logger or log
     chain_key = str(chain).upper()
-    cache_path = Path(cache_dir) / f"positions_cache_{chain_key}.json"
-    raw_text = cache_path.read_text(encoding="utf-8")
+    resolved_cache_path = Path(cache_path) if cache_path is not None else Path(cache_dir) / f"positions_cache_{chain_key}.json"
+    raw_text = resolved_cache_path.read_text(encoding="utf-8")
     data = json.loads(raw_text)
     positions = data.get("positions")
     if not isinstance(positions, dict):
-        raise ValueError(f"{cache_path} must contain object field 'positions'")
+        raise ValueError(f"{resolved_cache_path} must contain object field 'positions'")
     last_synced_block = int(data.get("last_synced_block") or 0)
     content_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
-    file_mtime = datetime.fromtimestamp(cache_path.stat().st_mtime, timezone.utc).replace(tzinfo=None)
+    file_mtime = datetime.fromtimestamp(resolved_cache_path.stat().st_mtime, timezone.utc).replace(tzinfo=None)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     conn = get_connection()

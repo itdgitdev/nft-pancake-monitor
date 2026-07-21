@@ -1,11 +1,14 @@
 {
   "version": 2,
   "dry_run": true,
+  "interval_seconds": 1800,
   "use_legacy_position_cache": true,
+  "use_db_position_cache": true,
+  "db_position_cache_source": "positions_cache",
   "wallets": {
     "main": {
       "bot_wallet": "0x9b73E95909Be63F02b06130716384c3030C74D8D",
-      "private_key_env": "PARASITE_BOT_PRIVATE_KEY"
+      "private_key_prefix_env": "CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX"
     }
   },
   "pool_defaults": {
@@ -14,39 +17,61 @@
     "slippage_bps": 10,
     "max_swap_price_impact_pct": 0.5,
     "execute_burn": false,
-    "auto_bootstrap_start_block": true
+    "auto_bootstrap_start_block": true,
+    "max_jobs_per_cycle": 2,
+    "auto_compound": {
+      "enabled": true,
+      "min_interval_seconds": 21600,
+      "min_compound_usd": 3.0,
+      "gas_cost_multiplier": 3.0,
+      "min_range_buffer_ratio": 0.1,
+      "max_jobs_per_cycle": 1
+    }
   },
   "pools": [
     {
-      "name": "USDT-GENIUS-0.25",
+      "name": "USDT-SPYB-0.01",
       "chain": "BNB",
-      "pool_address": "0x1380189b571ce8e1acda5fc7b1bbae55377d409c",
-      "pid": 554,
+      "wallet": "main",
+      "pool_address": "0x7aa6d92fc369a8c1edc631a3aac44efb0808ddbf",
+      "pid": 585,
       "bootstrap_start_block": null,
-      "seed_token_ids": []
-    },
-    {
-      "name": "USDT-memes-0.25",
-      "chain": "BNB",
-      "pool_address": "0x0932bc183c67f34dbbf52feefe20e4e7aa15260c",
-      "pid": 510,
-      "bootstrap_start_block": null,
-      "seed_token_ids": []
-    },
-    {
-      "name": "USDC-POP-0.25",
-      "chain": "BAS",
-      "pool_address": "0xb5bb9149d9f5aec751e8df607cc6bc961b71571d",
-      "pid": 465,
-      "bootstrap_start_block": null,
-      "seed_token_ids": [],
       "rebalance_range": {
         "mode": "price_percent",
-        "lower_percent": -6.0,
-        "upper_percent": 12.0
+        "lower_percent": -0.86,
+        "upper_percent": 1.15
+      }
+    },
+    {
+      "name": "USDC-VFY-0.05",
+      "dex_type": "aerodrome_v3",
+      "wallet": "main",
+      "chain": "BAS",
+      "pool_address": "0xf81d3c731b3ac5a4dfc968f514860bedeebebaf2",
+      "bootstrap_start_block": null,
+      "rebalance_range": {
+        "mode": "price_percent",
+        "lower_percent": -9.52,
+        "upper_percent": 15.03
+      }
+    },
+    {
+      "name": "AVNT-USDC-0.27",
+      "dex_type": "aerodrome_v3",
+      "wallet": "main",
+      "chain": "BAS",
+      "pool_address": "0xc4ed25e61cbde561c982789f740e3e9a8c317100",
+      "bootstrap_start_block": null,
+      "rebalance_range": {
+        "mode": "price_percent",
+        "lower_percent": -3.64,
+        "upper_percent": 2.32
       }
     }
   ],
+  "pnl": {
+    "native_prices_usd": {}
+  },
   "discord": {
     "enabled": true,
     "webhook_url_env": "CONFIGURED_REBALANCER_DISCORD_WEBHOOK",

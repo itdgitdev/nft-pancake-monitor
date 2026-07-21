@@ -7,7 +7,15 @@ from typing import Any
 
 from web3 import Web3
 
-from .models import DexType, GasPolicy, PoolConfig, WorkerConfig
+from .models import AutoCompoundConfig, DexType, GasPolicy, PoolConfig, PositionStrategy, WorkerConfig
+
+
+DEX_TYPE_ALIASES = {
+    "pancake_v3_masterchef": DexType.PANCAKE_V3_MASTERCHEF,
+    "pancake_v3": DexType.PANCAKE_V3,
+    "aerodrome_v3": DexType.AERODROME_V3,
+    "aerodrome_gauge": DexType.AERODROME_GAUGE,
+}
 
 
 def _checksum_or_none(value: str | None) -> str | None:
@@ -58,6 +66,10 @@ def _expand_pool_dict(raw_config: dict[str, Any], raw_pool: dict[str, Any]) -> d
     pool_defaults = _dict_or_empty(raw_config.get("pool_defaults"), "pool_defaults")
     wallets = _dict_or_empty(raw_config.get("wallets"), "wallets")
     merged = {**pool_defaults, **raw_pool}
+    default_compound = _dict_or_empty(pool_defaults.get("auto_compound"), "pool_defaults.auto_compound")
+    pool_compound = _dict_or_empty(raw_pool.get("auto_compound"), "pool.auto_compound")
+    if default_compound or pool_compound:
+        merged["auto_compound"] = {**default_compound, **pool_compound}
 
     wallet_alias = merged.pop("wallet", None)
     if wallet_alias:
@@ -76,6 +88,25 @@ def _expand_pool_dict(raw_config: dict[str, Any], raw_pool: dict[str, Any]) -> d
 
 
 def _pool_from_dict(raw: dict[str, Any]) -> PoolConfig:
+    auto_compound_raw = _dict_or_empty(raw.get("auto_compound"), "auto_compound")
+    auto_compound = AutoCompoundConfig(
+        enabled=_bool_from_config(auto_compound_raw.get("enabled"), False),
+        min_interval_seconds=int(auto_compound_raw.get("min_interval_seconds", 21_600)),
+        min_compound_usd=float(auto_compound_raw.get("min_compound_usd", 5.0)),
+        gas_cost_multiplier=float(auto_compound_raw.get("gas_cost_multiplier", 3.0)),
+        min_range_buffer_ratio=float(auto_compound_raw.get("min_range_buffer_ratio", 0.10)),
+        max_jobs_per_cycle=int(auto_compound_raw.get("max_jobs_per_cycle", 1)),
+    )
+    if auto_compound.min_interval_seconds < 0:
+        raise ValueError("auto_compound.min_interval_seconds must be non-negative")
+    if auto_compound.min_compound_usd < 0:
+        raise ValueError("auto_compound.min_compound_usd must be non-negative")
+    if auto_compound.gas_cost_multiplier < 0:
+        raise ValueError("auto_compound.gas_cost_multiplier must be non-negative")
+    if not 0 <= auto_compound.min_range_buffer_ratio < 0.5:
+        raise ValueError("auto_compound.min_range_buffer_ratio must be in [0, 0.5)")
+    if auto_compound.max_jobs_per_cycle < 1:
+        raise ValueError("auto_compound.max_jobs_per_cycle must be at least 1")
     rebalance_range = raw.get("rebalance_range")
     range_mode = None
     lower_percent = None
@@ -97,14 +128,35 @@ def _pool_from_dict(raw: dict[str, Any]) -> PoolConfig:
         if upper_percent <= 0:
             raise ValueError("rebalance_range.upper_percent must be positive")
 
+    dex_raw = str(raw.get("dex_type", DexType.PANCAKE_V3_MASTERCHEF.value)).strip().lower()
+    dex_type = DEX_TYPE_ALIASES.get(dex_raw)
+    if dex_type is None:
+        raise ValueError(f"unsupported dex_type {dex_raw!r}")
+
+    strategy_raw = raw.get("position_strategy")
+    position_strategy = None
+    if strategy_raw is not None:
+        if dex_type not in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            raise ValueError("position_strategy is only supported for Aerodrome pools")
+        try:
+            position_strategy = PositionStrategy(str(strategy_raw).strip().lower())
+        except ValueError as exc:
+            raise ValueError(
+                f"unsupported position_strategy {strategy_raw!r}; expected 'farm' or 'fee'"
+            ) from exc
+
     return PoolConfig(
         name=raw.get("name") or raw["pool_address"],
         chain=str(raw["chain"]).upper(),
         pool_address=Web3.to_checksum_address(raw["pool_address"]),
-        dex_type=DexType(raw.get("dex_type", DexType.PANCAKE_V3_MASTERCHEF.value)),
+        dex_type=dex_type,
         managed_wallets=_wallet_tuple(raw.get("managed_wallets", [])),
         bot_wallet=Web3.to_checksum_address(raw["bot_wallet"]),
         private_key_env=raw.get("private_key_env", "PARASITE_BOT_PRIVATE_KEY"),
+        private_key_prefix_env=raw.get(
+            "private_key_prefix_env",
+            "CONFIGURED_REBALANCER_PRIVATE_KEY_PREFIX",
+        ),
         token0_address=_checksum_or_none(raw.get("token0_address")),
         token1_address=_checksum_or_none(raw.get("token1_address")),
         token0_decimals=raw.get("token0_decimals"),
@@ -134,6 +186,8 @@ def _pool_from_dict(raw: dict[str, Any]) -> PoolConfig:
         rebalance_range_mode=range_mode,
         rebalance_range_lower_percent=lower_percent,
         rebalance_range_upper_percent=upper_percent,
+        auto_compound=auto_compound,
+        position_strategy=position_strategy,
     )
 
 

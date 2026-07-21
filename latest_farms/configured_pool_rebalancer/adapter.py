@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -11,7 +10,18 @@ from web3 import Web3
 from web3.exceptions import TimeExhausted, TransactionNotFound
 from w3multicall.multicall import W3Multicall
 
-from .abi import ERC20_ABI, INCREASE_LIQUIDITY_TOPIC, MASTERCHEF_V3_ABI, MAX_UINT128, MAX_UINT256, NPM_ABI, V3_POOL_ABI
+from .abi import (
+    AERODROME_GAUGE_ABI,
+    AERODROME_NPM_ABI,
+    AERODROME_POOL_ABI,
+    ERC20_ABI,
+    INCREASE_LIQUIDITY_TOPIC,
+    MASTERCHEF_V3_ABI,
+    MAX_UINT128,
+    MAX_UINT256,
+    NPM_ABI,
+    V3_POOL_ABI,
+)
 from .logging_utils import log_block, pool_context
 from .models import PoolConfig, PositionSnapshot, Slot0, TokenBalance, TxResult
 from .reward import token_price_usd
@@ -34,9 +44,16 @@ class MintValidationResult:
 
 
 try:
-    from latest_farms.config import MASTERCHEF_V3_ADDRESSES, NPM_ADDRESSES
+    from latest_farms.config import AERODROME_FACTORY_NPM_ADDRESSES, MASTERCHEF_V3_ADDRESSES, NPM_ADDRESSES
 except ImportError:  # pragma: no cover
-    from config import MASTERCHEF_V3_ADDRESSES, NPM_ADDRESSES
+    from config import AERODROME_FACTORY_NPM_ADDRESSES, MASTERCHEF_V3_ADDRESSES, NPM_ADDRESSES
+
+
+MASTER_CHEF_DEPOSIT_TOPIC = "0x" + Web3.keccak(text="Deposit(address,uint256,uint256,uint256,int24,int24)").hex().lower().replace("0x", "")
+MASTER_CHEF_WITHDRAW_TOPIC = "0x" + Web3.keccak(text="Withdraw(address,address,uint256,uint256)").hex().lower().replace("0x", "")
+AERODROME_GAUGE_DEPOSIT_TOPIC = "0x1c8ab8c7f45390d58f58f1d655213a82cca5d12179761a87c16f098813b8f211"
+AERODROME_GAUGE_WITHDRAW_TOPIC = "0x8903a5b5d08a841e7f68438387f1da20c84dea756379ed37e633ff3854b99b84"
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 class DexAdapter:
@@ -51,6 +68,65 @@ class DexAdapter:
     def discover_pool_metadata(self) -> PoolConfig:
         raise NotImplementedError
 
+    def read_balances(self, wallet: str) -> tuple[TokenBalance, TokenBalance]:
+        raise NotImplementedError
+
+    def read_token_balance(self, token_address: str, wallet: str) -> TokenBalance:
+        raise NotImplementedError
+
+    def read_staked_positions(self, token_ids: Iterable[int]) -> dict[int, PositionSnapshot]:
+        raise NotImplementedError
+
+    def read_npm_position(self, token_id: int, owner: str | None = None) -> PositionSnapshot:
+        raise NotImplementedError
+
+    def read_npm_positions(
+        self,
+        token_ids: Iterable[int],
+        owners: dict[int, str] | None = None,
+    ) -> dict[int, PositionSnapshot]:
+        owners = owners or {}
+        out: dict[int, PositionSnapshot] = {}
+        for token_id in sorted({int(value) for value in token_ids}):
+            try:
+                out[token_id] = self.read_npm_position(token_id, owner=owners.get(token_id))
+            except Exception:
+                continue
+        return out
+
+    def decrease_collect_withdraw(self, position: PositionSnapshot, slot0: Slot0) -> TxResult:
+        raise NotImplementedError
+
+    def withdraw_staked_position(self, position: PositionSnapshot) -> TxResult | None:
+        return None
+
+    def swap(self, token_in: str, token_out: str, amount_in: int) -> TxResult | None:
+        raise NotImplementedError
+
+    def mint(self, plan) -> tuple[TxResult, int | None]:
+        raise NotImplementedError
+
+    def should_stake(self) -> bool:
+        return False
+
+    def stake(self, token_id: int) -> TxResult:
+        raise NotImplementedError
+
+    def staking_owner_address(self) -> str | None:
+        return None
+
+    def stake_event_contract_address(self) -> str | None:
+        return None
+
+    def stake_event_topics(self) -> list[str]:
+        return []
+
+    def parse_stake_event(self, event) -> tuple[str, int] | None:
+        return None
+
+    def reward_token_address(self) -> str | None:
+        return None
+
 
 class PancakeV3MasterChefAdapter(DexAdapter):
     def __init__(self, w3: Web3, pool: PoolConfig, executor: TxExecutor):
@@ -61,6 +137,39 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         )
         self.npm = w3.eth.contract(address=self.npm_address, abi=NPM_ABI)
         self.masterchef = w3.eth.contract(address=self.masterchef_address, abi=MASTERCHEF_V3_ABI)
+
+    def should_stake(self) -> bool:
+        return self.pool.pid is not None
+
+    def staking_owner_address(self) -> str | None:
+        return self.masterchef_address
+
+    def stake_event_contract_address(self) -> str | None:
+        return self.masterchef_address
+
+    def stake_event_topics(self) -> list[str]:
+        return [MASTER_CHEF_DEPOSIT_TOPIC, MASTER_CHEF_WITHDRAW_TOPIC]
+
+    def parse_stake_event(self, event) -> tuple[str, int] | None:
+        topics = event.get("topics") or []
+        if len(topics) < 4:
+            return None
+        topic0 = Web3.to_hex(topics[0]).lower()
+        if topic0 == MASTER_CHEF_DEPOSIT_TOPIC.lower():
+            action = "stake"
+        elif topic0 == MASTER_CHEF_WITHDRAW_TOPIC.lower():
+            action = "unstake"
+        else:
+            return None
+        return action, int.from_bytes(topics[3], "big")
+
+    def reward_token_address(self) -> str | None:
+        try:
+            from .reward import pancake_reward_token
+
+            return pancake_reward_token(self.pool.chain)
+        except Exception:
+            return None
 
     def discover_pool_metadata(self) -> PoolConfig:
         pool_contract = self.w3.eth.contract(address=self.pool.pool_address, abi=V3_POOL_ABI)
@@ -133,6 +242,7 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                     )
                 )
             results = mc.call()
+            active: dict[int, tuple] = {}
             for i, data in enumerate(results):
                 if not data:
                     continue
@@ -142,7 +252,13 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                     continue
                 if self.pool.pid is not None and int(pid) != int(self.pool.pid):
                     continue
-                npm_pos = self.npm.functions.positions(token_id).call()
+                active[token_id] = data
+            npm_positions = self._batch_npm_position_values(active)
+            for token_id, data in active.items():
+                npm_pos = npm_positions.get(token_id)
+                if not npm_pos:
+                    continue
+                liquidity, _, tick_lower, tick_upper, _, _, user, pid, _ = data
                 token0 = Web3.to_checksum_address(npm_pos[2])
                 token1 = Web3.to_checksum_address(npm_pos[3])
                 fee = int(npm_pos[4])
@@ -163,6 +279,53 @@ class PancakeV3MasterChefAdapter(DexAdapter):
                     pid=int(pid),
                     is_staked=True,
                 )
+        return out
+
+    def _batch_npm_position_values(self, token_ids: Iterable[int]) -> dict[int, tuple]:
+        ordered = sorted({int(value) for value in token_ids})
+        out: dict[int, tuple] = {}
+        signature = (
+            "positions(uint256)"
+            "(uint96,address,address,address,uint24,int24,int24,uint128,uint256,uint256,uint128,uint128)"
+        )
+        for start in range(0, len(ordered), 150):
+            batch = ordered[start : start + 150]
+            multicall = W3Multicall(self.w3)
+            for token_id in batch:
+                multicall.add(W3Multicall.Call(self.npm_address, signature, token_id))
+            try:
+                values = multicall.call()
+            except Exception as exc:
+                log.warning("Pancake NPM position batch failed pool=%s candidates=%s: %s", self.pool.name, len(batch), exc)
+                continue
+            for token_id, value in zip(batch, values):
+                if value:
+                    out[token_id] = value
+        return out
+
+    def read_npm_positions(
+        self,
+        token_ids: Iterable[int],
+        owners: dict[int, str] | None = None,
+    ) -> dict[int, PositionSnapshot]:
+        owners = owners or {}
+        out: dict[int, PositionSnapshot] = {}
+        for token_id, pos in self._batch_npm_position_values(token_ids).items():
+            out[token_id] = PositionSnapshot(
+                token_id=token_id,
+                owner=Web3.to_checksum_address(owners.get(token_id) or self.pool.bot_wallet),
+                pool_address=self.pool.pool_address,
+                token0=Web3.to_checksum_address(pos[2]),
+                token1=Web3.to_checksum_address(pos[3]),
+                fee=int(pos[4]),
+                tick_lower=int(pos[5]),
+                tick_upper=int(pos[6]),
+                liquidity=int(pos[7]),
+                tokens_owed0=int(pos[10]),
+                tokens_owed1=int(pos[11]),
+                pid=self.pool.pid,
+                is_staked=False,
+            )
         return out
 
     def read_npm_position(self, token_id: int, owner: str | None = None) -> PositionSnapshot:
@@ -190,6 +353,7 @@ class PancakeV3MasterChefAdapter(DexAdapter):
 
     def decrease_collect_withdraw(self, position: PositionSnapshot, slot0: Slot0) -> TxResult:
         deadline = int(time.time()) + self.pool.deadline_seconds
+        contract = self.masterchef if position.is_staked else self.npm
         calls = []
         if position.liquidity > 0:
             expected0, expected1 = amounts_for_liquidity(
@@ -198,20 +362,20 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             min0 = self._apply_slippage(expected0)
             min1 = self._apply_slippage(expected1)
             calls.append(
-                self.masterchef.encode_abi(
+                contract.encode_abi(
                     "decreaseLiquidity",
                     args=[(position.token_id, position.liquidity, min0, min1, deadline)],
                 )
             )
         calls.append(
-            self.masterchef.encode_abi(
+            contract.encode_abi(
                 "collect",
                 args=[(position.token_id, self.pool.bot_wallet, MAX_UINT128, MAX_UINT128)],
             )
         )
         if position.is_staked:
             calls.append(self.masterchef.encode_abi("withdraw", args=[position.token_id, self.pool.bot_wallet]))
-        return self.executor.send(self.masterchef.functions.multicall(calls), "withdraw", gas=1_100_000)
+        return self.executor.send(contract.functions.multicall(calls), "withdraw", gas=1_100_000)
 
     def approve_if_needed(self, token: str, spender: str, amount: int) -> TxResult | None:
         if amount <= 0:
@@ -698,7 +862,11 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         except Exception as exc:
             return MintValidationResult("READ_FAILED", f"position read failed: {exc}", rpc_label=rpc_label)
         owner = position.owner.lower()
-        if owner not in {self.pool.bot_wallet.lower(), self.masterchef_address.lower()}:
+        staking_owner = self.staking_owner_address()
+        valid_owners = {self.pool.bot_wallet.lower()}
+        if staking_owner:
+            valid_owners.add(staking_owner.lower())
+        if owner not in valid_owners:
             return MintValidationResult("INVALID_OWNER", f"owner mismatch: owner={position.owner}", position, rpc_label)
         if not self._matches_pool(position.token0, position.token1, position.fee):
             return MintValidationResult(
@@ -982,10 +1150,7 @@ class PancakeV3MasterChefAdapter(DexAdapter):
             ),
         }
         metadata = {**metadata, **safe_tx_metadata}
-        private_key = os.getenv(self.pool.private_key_env)
-        if not private_key:
-            raise RuntimeError(f"missing private key env {self.pool.private_key_env}")
-        signed = self.w3.eth.account.sign_transaction(tx, private_key)
+        signed = self.executor.sign_transaction(wallet, tx)
         signed_tx_hash = Web3.keccak(signed.raw_transaction).hex()
         if not signed_tx_hash.startswith("0x"):
             signed_tx_hash = "0x" + signed_tx_hash
@@ -1286,9 +1451,620 @@ class PancakeV3MasterChefAdapter(DexAdapter):
         return max(0, int(amount * (10000 - self.pool.slippage_bps) / 10000))
 
 
-class AerodromeGaugeAdapter(DexAdapter):
-    def read_slot0(self) -> Slot0:
-        raise NotImplementedError("aerodrome_gauge adapter is reserved for the next integration phase")
+class AerodromeV3GaugeAdapter(PancakeV3MasterChefAdapter):
+    def __init__(self, w3: Web3, pool: PoolConfig, executor: TxExecutor):
+        DexAdapter.__init__(self, w3, pool, executor)
+        self.pool_contract = w3.eth.contract(address=pool.pool_address, abi=AERODROME_POOL_ABI)
+        self.npm_address = Web3.to_checksum_address(pool.npm_address) if pool.npm_address else None
+        self.npm = (
+            w3.eth.contract(address=self.npm_address, abi=AERODROME_NPM_ABI)
+            if self.npm_address
+            else None
+        )
+        self.gauge_address = Web3.to_checksum_address(pool.staking_address) if pool.staking_address else None
+        self.gauge = (
+            w3.eth.contract(address=self.gauge_address, abi=AERODROME_GAUGE_ABI)
+            if self.gauge_address
+            else None
+        )
 
     def discover_pool_metadata(self) -> PoolConfig:
-        raise NotImplementedError("aerodrome_gauge adapter is reserved for the next integration phase")
+        started_at = time.monotonic()
+        anchor_block = int(self.w3.eth.block_number)
+        metadata, routing_errors = self._read_aerodrome_pool_metadata(anchor_block)
+        token0 = Web3.to_checksum_address(metadata["token0"])
+        token1 = Web3.to_checksum_address(metadata["token1"])
+        fee = int(metadata["fee"])
+        tick_spacing = int(metadata["tick_spacing"])
+        dec0, dec1 = self._read_token_decimals(token0, token1, anchor_block)
+
+        db_npm = self._db_expected_npm()
+        npm_address, npm_source = self._resolve_npm_address(
+            metadata.get("nft"),
+            routing_errors.get("nft"),
+            db_npm,
+            anchor_block,
+        )
+        gauge_address, gauge_source = self._resolve_gauge_address(
+            metadata.get("gauge"),
+            routing_errors.get("gauge"),
+            anchor_block,
+        )
+
+        mismatches = self._configured_metadata_mismatches(
+            token0=token0,
+            token1=token1,
+            fee=fee,
+            tick_spacing=tick_spacing,
+            npm_address=npm_address,
+            gauge_address=gauge_address,
+        )
+        if db_npm and db_npm.lower() != npm_address.lower():
+            mismatches.append("db_npm_address")
+        if mismatches:
+            log.warning(
+                "AERODROME_METADATA_MISMATCH pool=%s fields=%s action=USE_RESOLVED_METADATA",
+                self.pool.name,
+                ",".join(mismatches),
+            )
+
+        resolved = PoolConfig(
+            **{
+                **self.pool.__dict__,
+                "token0_address": token0,
+                "token1_address": token1,
+                "token0_decimals": dec0,
+                "token1_decimals": dec1,
+                "fee": fee,
+                "tick_spacing": tick_spacing,
+                "npm_address": npm_address,
+                "staking_address": gauge_address,
+            }
+        )
+        self.pool = resolved
+        self.npm_address = npm_address
+        self.npm = self.w3.eth.contract(address=npm_address, abi=AERODROME_NPM_ABI)
+        self.gauge_address = gauge_address
+        self.gauge = (
+            self.w3.eth.contract(address=gauge_address, abi=AERODROME_GAUGE_ABI)
+            if gauge_address
+            else None
+        )
+        log.info(
+            "aerodrome metadata resolved pool=%s anchor_block=%s npm_address=%s npm_source=%s "
+            "gauge_address=%s gauge_source=%s token0=%s token1=%s fee=%s tick_spacing=%s "
+            "configured_mismatches=%s metadata_duration_ms=%s",
+            self.pool.name,
+            anchor_block,
+            npm_address,
+            npm_source,
+            gauge_address,
+            gauge_source,
+            token0,
+            token1,
+            fee,
+            tick_spacing,
+            mismatches,
+            int((time.monotonic() - started_at) * 1000),
+        )
+        return resolved
+
+    def _read_aerodrome_pool_metadata(self, anchor_block: int) -> tuple[dict, dict[str, Exception]]:
+        signatures = [
+            ("token0", "token0()(address)"),
+            ("token1", "token1()(address)"),
+            ("fee", "fee()(uint24)"),
+            ("tick_spacing", "tickSpacing()(int24)"),
+            ("gauge", "gauge()(address)"),
+            ("nft", "nft()(address)"),
+        ]
+        multicall = W3Multicall(self.w3)
+        for _, signature in signatures:
+            multicall.add(W3Multicall.Call(self.pool.pool_address, signature))
+        try:
+            values = multicall.call(anchor_block)
+            if len(values) != len(signatures):
+                raise ValueError(f"expected {len(signatures)} metadata values, got {len(values)}")
+            return dict(zip((name for name, _ in signatures), values)), {}
+        except Exception as exc:
+            log.warning(
+                "Aerodrome metadata multicall unavailable pool=%s anchor_block=%s: %s",
+                self.pool.name,
+                anchor_block,
+                exc,
+            )
+
+        metadata: dict = {}
+        routing_errors: dict[str, Exception] = {}
+        function_names = {
+            "token0": "token0",
+            "token1": "token1",
+            "fee": "fee",
+            "tick_spacing": "tickSpacing",
+            "gauge": "gauge",
+            "nft": "nft",
+        }
+        for field, function_name in function_names.items():
+            try:
+                function = getattr(self.pool_contract.functions, function_name)()
+                metadata[field] = function.call(block_identifier=anchor_block)
+            except Exception as field_exc:
+                if field in {"gauge", "nft"}:
+                    routing_errors[field] = field_exc
+                    metadata[field] = None
+                    continue
+                raise RuntimeError(
+                    f"AERODROME_METADATA_UNRESOLVED field={field} pool={self.pool.name}"
+                ) from field_exc
+        return metadata, routing_errors
+
+    def _read_token_decimals(self, token0: str, token1: str, anchor_block: int) -> tuple[int, int]:
+        multicall = W3Multicall(self.w3)
+        multicall.add(W3Multicall.Call(token0, "decimals()(uint8)"))
+        multicall.add(W3Multicall.Call(token1, "decimals()(uint8)"))
+        try:
+            values = multicall.call(anchor_block)
+            return int(values[0]), int(values[1])
+        except Exception as exc:
+            log.warning("Aerodrome token decimals multicall unavailable pool=%s: %s", self.pool.name, exc)
+            dec0 = self._erc20(token0).functions.decimals().call(block_identifier=anchor_block)
+            dec1 = self._erc20(token1).functions.decimals().call(block_identifier=anchor_block)
+            return int(dec0), int(dec1)
+
+    def _resolve_npm_address(
+        self,
+        onchain_value,
+        onchain_error: Exception | None,
+        db_npm: str | None,
+        anchor_block: int,
+    ) -> tuple[str, str]:
+        onchain = self._address_or_none(onchain_value)
+        if onchain and self._has_contract_code(onchain, anchor_block):
+            return onchain, "POOL_NFT"
+        if onchain_error:
+            log.warning("Aerodrome pool nft() unavailable pool=%s: %s", self.pool.name, onchain_error)
+        elif onchain:
+            log.warning("Aerodrome pool nft() returned address without bytecode pool=%s npm=%s", self.pool.name, onchain)
+
+        if db_npm and self._has_contract_code(db_npm, anchor_block):
+            return db_npm, "DB_FACTORY"
+        configured = self._address_or_none(self.pool.npm_address)
+        if configured and self._has_contract_code(configured, anchor_block):
+            return configured, "CONFIG_FALLBACK"
+        raise RuntimeError(f"NPM_METADATA_UNRESOLVED pool={self.pool.name}")
+
+    def _resolve_gauge_address(
+        self,
+        onchain_value,
+        onchain_error: Exception | None,
+        anchor_block: int,
+    ) -> tuple[str | None, str]:
+        if onchain_error is None:
+            onchain = self._address_or_none(onchain_value)
+            if onchain is None and onchain_value and str(onchain_value).lower() != ZERO_ADDRESS:
+                raise RuntimeError(f"GAUGE_METADATA_UNRESOLVED pool={self.pool.name} reason=invalid_address")
+            if onchain is None:
+                return None, "NONE"
+            if not self._has_contract_code(onchain, anchor_block):
+                raise RuntimeError(f"GAUGE_METADATA_UNRESOLVED pool={self.pool.name} reason=no_bytecode")
+            return onchain, "POOL_GAUGE"
+
+        log.warning("Aerodrome pool gauge() unavailable pool=%s: %s", self.pool.name, onchain_error)
+        configured = self._address_or_none(self.pool.staking_address)
+        if configured and self._has_contract_code(configured, anchor_block):
+            return configured, "CONFIG_FALLBACK"
+        raise RuntimeError(f"GAUGE_METADATA_UNRESOLVED pool={self.pool.name}")
+
+    def _db_expected_npm(self) -> str | None:
+        worker_config = getattr(self.executor, "worker_config", None)
+        if not worker_config or not bool(getattr(worker_config, "use_db_position_cache", False)):
+            return None
+        try:
+            try:
+                from latest_farms.create_db import get_connection
+            except ImportError:  # pragma: no cover
+                from create_db import get_connection
+            conn = get_connection()
+            cursor = conn.cursor(dictionary=True)
+            try:
+                cursor.execute(
+                    """
+                    SELECT factory_address
+                    FROM aerodrome_pool_info
+                    WHERE chain = %s AND LOWER(pool_address) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (self.pool.chain, self.pool.pool_address),
+                )
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+                conn.close()
+        except Exception as exc:
+            log.warning("Aerodrome metadata DB cross-check unavailable pool=%s: %s", self.pool.name, exc)
+            return None
+        if not row or not row.get("factory_address"):
+            return None
+        factory = str(row["factory_address"]).lower()
+        for configured_factory, npm_address in AERODROME_FACTORY_NPM_ADDRESSES.get(self.pool.chain, {}).items():
+            if str(configured_factory).lower() == factory:
+                return Web3.to_checksum_address(npm_address)
+        log.warning(
+            "Aerodrome factory has no NPM mapping pool=%s factory=%s",
+            self.pool.name,
+            row["factory_address"],
+        )
+        return None
+
+    def _configured_metadata_mismatches(
+        self,
+        *,
+        token0: str,
+        token1: str,
+        fee: int,
+        tick_spacing: int,
+        npm_address: str,
+        gauge_address: str | None,
+    ) -> list[str]:
+        mismatches: list[str] = []
+        address_fields = {
+            "token0_address": (self.pool.token0_address, token0),
+            "token1_address": (self.pool.token1_address, token1),
+            "npm_address": (self.pool.npm_address, npm_address),
+            "staking_address": (self.pool.staking_address, gauge_address),
+        }
+        for field, (configured, resolved) in address_fields.items():
+            if configured and (not resolved or str(configured).lower() != str(resolved).lower()):
+                mismatches.append(field)
+        if self.pool.fee is not None and int(self.pool.fee) != int(fee):
+            mismatches.append("fee")
+        if self.pool.tick_spacing is not None and int(self.pool.tick_spacing) != int(tick_spacing):
+            mismatches.append("tick_spacing")
+        return mismatches
+
+    def _has_contract_code(self, address: str, anchor_block: int) -> bool:
+        try:
+            return bool(self.w3.eth.get_code(Web3.to_checksum_address(address), anchor_block))
+        except Exception as exc:
+            log.warning("Aerodrome contract bytecode check failed pool=%s address=%s: %s", self.pool.name, address, exc)
+            return False
+
+    @staticmethod
+    def _address_or_none(value) -> str | None:
+        if not value or str(value).lower() == ZERO_ADDRESS:
+            return None
+        try:
+            return Web3.to_checksum_address(value)
+        except (TypeError, ValueError):
+            return None
+
+    def read_slot0(self) -> Slot0:
+        res = self.pool_contract.functions.slot0().call()
+        return Slot0(sqrt_price_x96=int(res[0]), tick=int(res[1]))
+
+    def should_stake(self) -> bool:
+        return self.gauge_address is not None
+
+    def staking_owner_address(self) -> str | None:
+        return self.gauge_address
+
+    def stake_event_contract_address(self) -> str | None:
+        return self.gauge_address
+
+    def stake_event_topics(self) -> list[str]:
+        return [AERODROME_GAUGE_DEPOSIT_TOPIC, AERODROME_GAUGE_WITHDRAW_TOPIC]
+
+    def parse_stake_event(self, event) -> tuple[str, int] | None:
+        topics = event.get("topics") or []
+        if len(topics) < 3:
+            return None
+        topic0 = Web3.to_hex(topics[0]).lower()
+        if topic0 == AERODROME_GAUGE_DEPOSIT_TOPIC.lower():
+            action = "stake"
+        elif topic0 == AERODROME_GAUGE_WITHDRAW_TOPIC.lower():
+            action = "unstake"
+        else:
+            return None
+        return action, int.from_bytes(topics[2], "big")
+
+    def reward_token_address(self) -> str | None:
+        if not self.gauge:
+            return None
+        try:
+            return Web3.to_checksum_address(self.gauge.functions.rewardToken().call())
+        except Exception:
+            return None
+
+    def read_staked_positions(self, token_ids: Iterable[int]) -> dict[int, PositionSnapshot]:
+        out: dict[int, PositionSnapshot] = {}
+        if not self.gauge:
+            return out
+        managed_wallets = [Web3.to_checksum_address(wallet) for wallet in self.pool.managed_wallets]
+        ids = sorted({int(tid) for tid in token_ids})
+        owners: dict[int, str] = {}
+        signature = "stakedContains(address,uint256)(bool)"
+        for start in range(0, len(ids), 150):
+            batch = ids[start : start + 150]
+            multicall = W3Multicall(self.w3)
+            pairs: list[tuple[int, str]] = []
+            for token_id in batch:
+                for wallet in managed_wallets:
+                    multicall.add(W3Multicall.Call(self.gauge_address, signature, (wallet, token_id)))
+                    pairs.append((token_id, wallet))
+            try:
+                membership = multicall.call()
+            except Exception as exc:
+                log.warning("Aerodrome gauge membership batch failed pool=%s candidates=%s: %s", self.pool.name, len(batch), exc)
+                continue
+            for (token_id, wallet), contains in zip(pairs, membership):
+                if contains and token_id not in owners:
+                    owners[token_id] = wallet
+
+        for token_id, position in self.read_npm_positions(owners, owners).items():
+            if not self._matches_pool(position.token0, position.token1, position.fee):
+                continue
+            if int(position.liquidity) <= 0:
+                continue
+            position.owner = owners[token_id]
+            position.is_staked = True
+            out[token_id] = position
+        return out
+
+    def _batch_npm_position_values(self, token_ids: Iterable[int]) -> dict[int, tuple]:
+        ordered = sorted({int(value) for value in token_ids})
+        out: dict[int, tuple] = {}
+        signature = (
+            "positions(uint256)"
+            "(uint96,address,address,address,int24,int24,int24,uint128,uint256,uint256,uint128,uint128)"
+        )
+        for start in range(0, len(ordered), 150):
+            batch = ordered[start : start + 150]
+            multicall = W3Multicall(self.w3)
+            for token_id in batch:
+                multicall.add(W3Multicall.Call(self.npm_address, signature, token_id))
+            try:
+                values = multicall.call()
+            except Exception as exc:
+                log.warning("Aerodrome NPM position batch failed pool=%s candidates=%s: %s", self.pool.name, len(batch), exc)
+                continue
+            for token_id, value in zip(batch, values):
+                if value:
+                    out[token_id] = value
+        return out
+
+    def read_npm_positions(
+        self,
+        token_ids: Iterable[int],
+        owners: dict[int, str] | None = None,
+    ) -> dict[int, PositionSnapshot]:
+        owners = owners or {}
+        out: dict[int, PositionSnapshot] = {}
+        for token_id, pos in self._batch_npm_position_values(token_ids).items():
+            out[token_id] = PositionSnapshot(
+                token_id=token_id,
+                owner=Web3.to_checksum_address(owners.get(token_id) or self.pool.bot_wallet),
+                pool_address=self.pool.pool_address,
+                token0=Web3.to_checksum_address(pos[2]),
+                token1=Web3.to_checksum_address(pos[3]),
+                fee=int(pos[4]),
+                tick_lower=int(pos[5]),
+                tick_upper=int(pos[6]),
+                liquidity=int(pos[7]),
+                tokens_owed0=int(pos[10]),
+                tokens_owed1=int(pos[11]),
+                pid=None,
+                is_staked=False,
+            )
+        return out
+
+    def read_npm_position(self, token_id: int, owner: str | None = None) -> PositionSnapshot:
+        pos = self.npm.functions.positions(int(token_id)).call()
+        actual_owner = owner
+        if actual_owner is None:
+            try:
+                actual_owner = self.npm.functions.ownerOf(int(token_id)).call()
+            except Exception:
+                actual_owner = self.pool.bot_wallet
+        tick_spacing = int(pos[4])
+        return PositionSnapshot(
+            token_id=int(token_id),
+            owner=Web3.to_checksum_address(actual_owner or self.pool.bot_wallet),
+            pool_address=self.pool.pool_address,
+            token0=Web3.to_checksum_address(pos[2]),
+            token1=Web3.to_checksum_address(pos[3]),
+            fee=tick_spacing,
+            tick_lower=int(pos[5]),
+            tick_upper=int(pos[6]),
+            liquidity=int(pos[7]),
+            tokens_owed0=int(pos[10]),
+            tokens_owed1=int(pos[11]),
+            pid=None,
+            is_staked=False,
+        )
+
+    def withdraw_staked_position(self, position: PositionSnapshot) -> TxResult | None:
+        if not position.is_staked:
+            return None
+        if not self.gauge:
+            raise RuntimeError("Aerodrome gauge address is not configured")
+        return self.executor.send(self.gauge.functions.withdraw(int(position.token_id)), "unstake", gas=450000)
+
+    def decrease_collect_withdraw(self, position: PositionSnapshot, slot0: Slot0) -> TxResult:
+        deadline = int(time.time()) + self.pool.deadline_seconds
+        decrease_tx = None
+        if position.liquidity > 0:
+            expected0, expected1 = amounts_for_liquidity(
+                position.liquidity,
+                slot0.sqrt_price_x96,
+                position.tick_lower,
+                position.tick_upper,
+            )
+            min0 = self._apply_slippage(expected0)
+            min1 = self._apply_slippage(expected1)
+            decrease_tx = self.executor.send(
+                self.npm.functions.decreaseLiquidity(
+                    (position.token_id, position.liquidity, min0, min1, deadline)
+                ),
+                "withdraw",
+                gas=550000,
+            )
+        collect_tx = self.executor.send(
+            self.npm.functions.collect(
+                (position.token_id, self.pool.bot_wallet, MAX_UINT128, MAX_UINT128)
+            ),
+            "withdraw",
+            gas=350000,
+        )
+        if decrease_tx:
+            collect_tx.metadata["decrease_tx_hash"] = decrease_tx.tx_hash
+            collect_tx.metadata["decrease_status"] = decrease_tx.status
+        return collect_tx
+
+    def mint(self, plan) -> tuple[TxResult, int | None]:
+        self.approve_if_needed(self.pool.token0_address, self.npm_address, plan.amount0_desired)
+        self.approve_if_needed(self.pool.token1_address, self.npm_address, plan.amount1_desired)
+        deadline = int(time.time()) + self.pool.deadline_seconds
+        min0 = self._apply_slippage(plan.amount0_desired)
+        min1 = self._apply_slippage(plan.amount1_desired)
+        tick_spacing = int(self.pool.tick_spacing or self.pool.fee)
+        params = (
+            self.pool.token0_address,
+            self.pool.token1_address,
+            tick_spacing,
+            int(plan.new_tick_lower),
+            int(plan.new_tick_upper),
+            int(plan.amount0_desired),
+            int(plan.amount1_desired),
+            min0,
+            min1,
+            Web3.to_checksum_address(self.pool.bot_wallet),
+            deadline,
+            0,
+        )
+        log_block(
+            log,
+            logging.INFO,
+            "mint start",
+            pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+            {
+                "stage": "mint_start",
+                "action": "mint",
+                "token0": self.pool.token0_address,
+                "token1": self.pool.token1_address,
+                "tick_spacing": tick_spacing,
+                "tick_lower": int(plan.new_tick_lower),
+                "tick_upper": int(plan.new_tick_upper),
+                "amount0_desired_raw": int(plan.amount0_desired),
+                "amount1_desired_raw": int(plan.amount1_desired),
+                "amount0_min_raw": min0,
+                "amount1_min_raw": min1,
+                "sqrt_price_x96": 0,
+                "deadline": deadline,
+            },
+        )
+        result = self.executor.send(self.npm.functions.mint(params), "mint", gas=800000)
+        if result.dry_run:
+            return result, None
+        receipt = self._mint_receipt_from_result(result)
+        if receipt is None:
+            log_block(
+                log,
+                logging.WARNING,
+                "mint receipt unavailable",
+                pool_context(self.pool, old_token_id=getattr(plan, "old_token_id", None)),
+                {
+                    "stage": "mint_receipt",
+                    "status": result.status,
+                    "tx_hash": result.tx_hash,
+                    "signed_tx_hash": result.metadata.get("signed_tx_hash") if result.metadata else None,
+                    "next_action": "journal recovery will try receipt lookup",
+                },
+            )
+            return result, None
+        if int(receipt.get("status", 0)) != 1:
+            result.metadata["error"] = "mint transaction reverted"
+            return result, None
+        token_id = self._new_token_id_from_mint_receipt(receipt)
+        if token_id is None:
+            return result, None
+        validation = self._validate_minted_position_detail(
+            token_id,
+            plan,
+            receipt_block=int(receipt.get("blockNumber") or 0),
+        )
+        if not validation.can_stake:
+            result.metadata["error"] = f"mint receipt token validation failed: {validation.reason}"
+            return result, None
+        return result, token_id
+
+    def stake(self, token_id: int) -> TxResult:
+        if not self.gauge_address or not self.gauge:
+            raise RuntimeError("Aerodrome gauge address is not configured")
+        approved = None
+        try:
+            approved = self.npm.functions.getApproved(int(token_id)).call()
+        except Exception:
+            approved = None
+        if not approved or str(approved).lower() != self.gauge_address.lower():
+            self.executor.send(self.npm.functions.approve(self.gauge_address, int(token_id)), "approve", gas=160000)
+        log_block(
+            log,
+            logging.INFO,
+            "stake start",
+            pool_context(self.pool, new_token_id=token_id),
+            {
+                "stage": "stake_start",
+                "action": "stake",
+                "gauge": self.gauge_address,
+            },
+        )
+        return self.executor.send(self.gauge.functions.deposit(int(token_id)), "stake", gas=450000)
+
+    def burn_if_empty_and_owned(self, token_id: int) -> TxResult | None:
+        if not self.pool.execute_burn:
+            return None
+        pos = self.npm.functions.positions(int(token_id)).call()
+        if int(pos[7]) != 0 or int(pos[10]) != 0 or int(pos[11]) != 0:
+            return None
+        owner = Web3.to_checksum_address(self.npm.functions.ownerOf(int(token_id)).call())
+        if owner != Web3.to_checksum_address(self.pool.bot_wallet):
+            return None
+        return self.executor.send(self.npm.functions.burn(int(token_id)), "burn", gas=180000)
+
+    def _read_npm_position_with_w3(self, w3: Web3, token_id: int, owner: str | None = None) -> PositionSnapshot:
+        if w3 is self.w3:
+            return self.read_npm_position(token_id, owner=owner)
+        npm = w3.eth.contract(address=self.npm_address, abi=AERODROME_NPM_ABI)
+        pos = npm.functions.positions(int(token_id)).call()
+        actual_owner = owner
+        try:
+            actual_owner = npm.functions.ownerOf(int(token_id)).call()
+        except Exception:
+            pass
+        tick_spacing = int(pos[4])
+        return PositionSnapshot(
+            token_id=int(token_id),
+            owner=Web3.to_checksum_address(actual_owner or self.pool.bot_wallet),
+            pool_address=self.pool.pool_address,
+            token0=Web3.to_checksum_address(pos[2]),
+            token1=Web3.to_checksum_address(pos[3]),
+            fee=tick_spacing,
+            tick_lower=int(pos[5]),
+            tick_upper=int(pos[6]),
+            liquidity=int(pos[7]),
+            tokens_owed0=int(pos[10]),
+            tokens_owed1=int(pos[11]),
+            pid=None,
+            is_staked=False,
+        )
+
+    def _matches_pool(self, token0: str, token1: str, fee: int) -> bool:
+        expected_spacing = int(self.pool.tick_spacing or self.pool.fee or 0)
+        return (
+            token0.lower() == self.pool.token0_address.lower()
+            and token1.lower() == self.pool.token1_address.lower()
+            and int(fee) == expected_spacing
+        )
+
+
+AerodromeGaugeAdapter = AerodromeV3GaugeAdapter

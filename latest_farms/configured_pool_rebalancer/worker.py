@@ -3,21 +3,36 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from web3 import Web3
 from web3.exceptions import TransactionNotFound
 
-from .adapter import AerodromeGaugeAdapter, PancakeV3MasterChefAdapter
+from .adapter import AerodromeGaugeAdapter, DexAdapter, PancakeV3MasterChefAdapter
 from .discord_notifier import DiscordNotifier
 from .evm import web3_connection
 from .journal import RebalanceJournal, mysql_advisory_lock
 from .logging_utils import log_block, pool_context
-from .models import DexType, PoolConfig, PositionSnapshot, PositionState, RebalancePlan, TokenBalance, TxResult, WorkerConfig
+from .models import (
+    CompoundCandidate,
+    DexType,
+    PoolConfig,
+    PositionSnapshot,
+    PositionState,
+    PositionStrategy,
+    RebalanceCycleOutcome,
+    RebalancePlan,
+    StakeMode,
+    TokenBalance,
+    TxResult,
+    WorkerConfig,
+)
 from .pnl_report import ConfiguredPoolPnlReporter
 from .planner import RebalancePlanner, SwapPlanner
 from .position_index import PositionIndex
-from .reward import pancake_reward_token, token_price_usd
+from .reward import token_price_usd
+from .signer import RuntimeSigner
 from .tx_executor import TxExecutor
 from .v3_math import price_percent_from_tick_delta
 
@@ -25,10 +40,18 @@ from .v3_math import price_percent_from_tick_delta
 log = logging.getLogger("configured_pool_rebalancer")
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().lower().replace("0x", "")
 
+ADAPTER_REGISTRY = {
+    DexType.PANCAKE_V3_MASTERCHEF: PancakeV3MasterChefAdapter,
+    DexType.PANCAKE_V3: PancakeV3MasterChefAdapter,
+    DexType.AERODROME_V3: AerodromeGaugeAdapter,
+    DexType.AERODROME_GAUGE: AerodromeGaugeAdapter,
+}
+
 
 class ConfiguredPoolRebalancer:
-    def __init__(self, config: WorkerConfig, migrate: bool = False):
+    def __init__(self, config: WorkerConfig, migrate: bool = False, signer: RuntimeSigner | None = None):
         self.config = config
+        self.signer = signer
         self.index = PositionIndex(
             config.cache_dir,
             legacy_cache_dir=config.legacy_position_cache_dir,
@@ -38,6 +61,8 @@ class ConfiguredPoolRebalancer:
         )
         self.journal = RebalanceJournal()
         self.notifier = DiscordNotifier(config)
+        self._collect_compound_candidates = False
+        self._cycle_compound_candidates: dict[str, list[CompoundCandidate]] = {}
         if migrate:
             self.journal.migrate()
 
@@ -64,13 +89,38 @@ class ConfiguredPoolRebalancer:
                 results.append({"pool": pool.name, "status": "ERROR", "error": str(exc)})
         return results
 
+    def run_once_with_outcome(self) -> RebalanceCycleOutcome:
+        self._cycle_compound_candidates = {}
+        self._collect_compound_candidates = True
+        try:
+            records = self.run_once()
+        finally:
+            self._collect_compound_candidates = False
+
+        wallets_by_pool: dict[str, set[str]] = {}
+        for pool in self.config.pools:
+            wallets_by_pool.setdefault(pool.name, set()).add(pool.bot_wallet.lower())
+        blocked_wallets: set[str] = set()
+        for record in records:
+            safe = record.get("state") == PositionState.IN_RANGE.value and record.get("status") != "ERROR"
+            if not safe:
+                blocked_wallets.update(wallets_by_pool.get(str(record.get("pool")), set()))
+        return RebalanceCycleOutcome(
+            records=records,
+            compound_candidates={
+                pool_name: tuple(candidates)
+                for pool_name, candidates in self._cycle_compound_candidates.items()
+            },
+            blocked_wallets=blocked_wallets,
+        )
+
     def _run_pool(self, raw_pool: PoolConfig) -> list[dict]:
         w3 = web3_connection(raw_pool.chain)
-        executor = TxExecutor(w3, raw_pool, self.config.dry_run, self.config)
+        executor = TxExecutor(w3, raw_pool, self.config.dry_run, self.config, signer=self.signer)
         adapter = self._build_adapter(w3, raw_pool, executor)
         pool = adapter.discover_pool_metadata()
         if pool != raw_pool:
-            executor = TxExecutor(w3, pool, self.config.dry_run, self.config)
+            executor = TxExecutor(w3, pool, self.config.dry_run, self.config, signer=self.signer)
             adapter = self._build_adapter(w3, pool, executor)
         log_block(
             log,
@@ -138,6 +188,24 @@ class ConfiguredPoolRebalancer:
                 },
             )
             if in_range:
+                self._log_strategy_mismatch(pool, position)
+                if (
+                    self._collect_compound_candidates
+                    and pool.npm_address
+                    and position.owner.lower() == pool.bot_wallet.lower()
+                ):
+                    self._cycle_compound_candidates.setdefault(pool.name, []).append(
+                        CompoundCandidate(
+                            chain=pool.chain,
+                            pool_name=pool.name,
+                            pool_address=pool.pool_address,
+                            wallet=pool.bot_wallet,
+                            npm_address=pool.npm_address,
+                            token_id=position.token_id,
+                            stake_mode=StakeMode.STAKED if position.is_staked else StakeMode.UNSTAKED,
+                            anchor_block=position.last_updated_block,
+                        )
+                    )
                 out.append(
                     {
                         "pool": pool.name,
@@ -201,7 +269,7 @@ class ConfiguredPoolRebalancer:
             if position.owner.lower() != pool.bot_wallet.lower():
                 message = (
                     "signer mismatch: position owner is not bot_wallet. "
-                    "Create a separate pool config entry with that owner as bot_wallet/private_key_env."
+                    "Create a separate pool config entry with that owner as bot_wallet."
                 )
                 self.journal.mark_status(
                     pool.chain,
@@ -272,11 +340,26 @@ class ConfiguredPoolRebalancer:
         )
         return out
 
+    @staticmethod
+    def _log_strategy_mismatch(pool: PoolConfig, position: PositionSnapshot) -> None:
+        expected_staked = pool.expected_position_strategy == PositionStrategy.FARM
+        if bool(position.is_staked) == expected_staked:
+            return
+        log.warning(
+            "position strategy mismatch pool=%s chain=%s tokenId=%s expected_strategy=%s "
+            "actual_stake_mode=%s action=NONE reason=STRATEGY_MISMATCH",
+            pool.name,
+            pool.chain,
+            position.token_id,
+            pool.expected_position_strategy.value.upper(),
+            StakeMode.STAKED.value if position.is_staked else StakeMode.UNSTAKED.value,
+        )
+
     def _execute_position(
         self,
         w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         position: PositionSnapshot,
     ) -> None:
         lower_percent, upper_percent, percent_source = self._resolve_range_percent(pool, position)
@@ -284,6 +367,14 @@ class ConfiguredPoolRebalancer:
         pool_lock = f"rebalance:{pool.chain}:{pool.pool_address.lower()}"
         with mysql_advisory_lock(wallet_lock, self.config.lock_timeout_seconds):
             with mysql_advisory_lock(pool_lock, self.config.lock_timeout_seconds):
+                position = self._revalidate_position_for_execution(pool, adapter, position)
+                restore_staked = bool(position.is_staked)
+                if hasattr(self.journal, "set_restore_stake_mode"):
+                    self.journal.set_restore_stake_mode(
+                        pool.chain,
+                        position.token_id,
+                        StakeMode.STAKED.value if restore_staked else StakeMode.UNSTAKED.value,
+                    )
                 log_block(
                     log,
                     logging.INFO,
@@ -299,7 +390,7 @@ class ConfiguredPoolRebalancer:
                 )
                 pre0, pre1 = adapter.read_balances(pool.bot_wallet)
                 self.journal.record_balance_snapshot(pool.chain, position.token_id, "pre", pre0.raw, pre1.raw)
-                reward_token = pancake_reward_token(pool.chain)
+                reward_token = self._adapter_reward_token(adapter)
                 pre_reward = None
                 if reward_token and reward_token.lower() not in {
                     str(pool.token0_address).lower(),
@@ -310,6 +401,16 @@ class ConfiguredPoolRebalancer:
                     except Exception as exc:
                         log.warning("could not read pre reward balance for %s: %s", pool.name, exc)
                 slot_before_withdraw = adapter.read_slot0()
+                unstake_tx = adapter.withdraw_staked_position(position)
+                if unstake_tx:
+                    self.journal.mark_status(
+                        pool.chain,
+                        position.token_id,
+                        PositionState.UNSTAKED_UNWITHDRAWN,
+                        "unstake",
+                        unstake_tx,
+                    )
+                    position.is_staked = False
                 withdraw_tx = adapter.decrease_collect_withdraw(position, slot_before_withdraw)
                 log_block(
                     log,
@@ -735,15 +836,27 @@ class ConfiguredPoolRebalancer:
                             f"{reason}; tx_status={mint_tx.status}; tx_hash={mint_tx.tx_hash}; "
                             f"signed_tx_hash={signed_hash}; next_action=journal recovery will inspect receipt"
                         )
+                    mint_tx_label = None if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN" else "mint"
+                    mint_tx_for_journal = None if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN" else mint_tx
                     self.journal.mark_status(
                         pool.chain,
                         position.token_id,
                         PositionState.RECOVERY_REQUIRED,
-                        "mint",
-                        mint_tx,
+                        mint_tx_label,
+                        mint_tx_for_journal,
                         error_reason=f"mint reconciliation required: {reason}",
                     )
                     self.journal.mark_recovery_error(pool.chain, position.token_id, f"mint reconciliation required: {reason}")
+                    if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN":
+                        self._notify_partial_action(
+                            pool,
+                            position.token_id,
+                            "mint",
+                            "MINT_BROADCAST_UNKNOWN",
+                            f"mint broadcast unknown: {reason}",
+                            "recovery will retry mint only after confirming the signed hash is not on-chain",
+                            signed_tx_hash=(mint_tx.metadata or {}).get("signed_tx_hash"),
+                        )
                     self._notify_recovery_required(pool, position.token_id, f"mint reconciliation required: {reason}")
                     return
                 actual_lower_percent = price_percent_from_tick_delta(
@@ -752,10 +865,15 @@ class ConfiguredPoolRebalancer:
                 actual_upper_percent = price_percent_from_tick_delta(
                     swap_plan.new_tick_upper - slot_for_mint.tick
                 )
+                minted_state = (
+                    PositionState.MINTED_UNSTAKED
+                    if restore_staked
+                    else PositionState.REMINTED_UNSTAKED
+                )
                 self.journal.mark_status(
                     pool.chain,
                     position.token_id,
-                    PositionState.MINTED_UNSTAKED,
+                    minted_state,
                     "mint",
                     mint_tx,
                     new_token_id,
@@ -767,7 +885,7 @@ class ConfiguredPoolRebalancer:
                     range_percent_source=swap_plan.metadata.get("range_percent_source"),
                 )
 
-                if pool.pid is not None:
+                if restore_staked:
                     try:
                         stake_tx = adapter.stake(new_token_id)
                         self._confirm_stake_with_retry(pool, adapter, position.token_id, new_token_id)
@@ -799,6 +917,35 @@ class ConfiguredPoolRebalancer:
                 except Exception as exc:
                     log.warning("burn failed after remint for %s tokenId=%s: %s", pool.name, position.token_id, exc)
                 self._notify_discord_pnl_after_delay(pool, position.owner, position.token_id, new_token_id)
+
+    def _revalidate_position_for_execution(
+        self,
+        pool: PoolConfig,
+        adapter: DexAdapter,
+        discovered: PositionSnapshot,
+    ) -> PositionSnapshot:
+        try:
+            staked = adapter.read_staked_positions([discovered.token_id]).get(discovered.token_id)
+        except Exception as exc:
+            raise RuntimeError(f"could not revalidate staking state: {exc}") from exc
+        if staked is not None:
+            current = staked
+            current.is_staked = True
+        else:
+            try:
+                current = adapter.read_npm_position(discovered.token_id)
+            except Exception as exc:
+                raise RuntimeError(f"could not revalidate unstaked position: {exc}") from exc
+            if current.owner.lower() != pool.bot_wallet.lower():
+                raise RuntimeError(f"position owner changed before execution: {current.owner}")
+            current.is_staked = False
+        if current.owner.lower() != pool.bot_wallet.lower():
+            raise RuntimeError(f"position logical owner is not bot wallet: {current.owner}")
+        if not self._matches_pool(pool, current):
+            raise RuntimeError("position no longer matches configured pool")
+        if int(current.liquidity) <= 0:
+            raise RuntimeError("position has zero liquidity before execution")
+        return current
 
     def _recover_pending_swaps(self, w3, pool: PoolConfig) -> list[dict]:
         if self.config.dry_run:
@@ -903,7 +1050,7 @@ class ConfiguredPoolRebalancer:
         self,
         w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
     ) -> list[dict]:
         if self.config.dry_run:
             return []
@@ -944,6 +1091,8 @@ class ConfiguredPoolRebalancer:
                     with mysql_advisory_lock(pool_lock, self.config.lock_timeout_seconds):
                         if status == PositionState.MINTED_UNSTAKED.value:
                             result = self._recover_minted_unstaked(pool, adapter, job)
+                        elif status == PositionState.UNSTAKED_UNWITHDRAWN.value:
+                            result = self._recover_unstaked_unwithdrawn(w3, pool, adapter, job)
                         else:
                             result = self._recover_withdrawn_unminted(w3, pool, adapter, job)
                 out.append(result)
@@ -998,7 +1147,7 @@ class ConfiguredPoolRebalancer:
     def _recover_minted_unstaked(
         self,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         job: dict,
     ) -> dict:
         old_token_id = int(job["old_token_id"])
@@ -1006,6 +1155,7 @@ class ConfiguredPoolRebalancer:
         position = self._position_from_job(pool, job)
         if position is None:
             return self._mark_manual_recovery(pool, old_token_id, "missing old range data for recovery")
+        restore_staked = self._job_restore_staked(job, pool, adapter)
 
         new_position = adapter.read_npm_position(new_token_id, owner=pool.bot_wallet)
         log.info(
@@ -1021,10 +1171,17 @@ class ConfiguredPoolRebalancer:
             new_position.tick_upper,
         )
         if new_position.owner.lower() != pool.bot_wallet.lower():
-            if new_position.owner.lower() == adapter.masterchef_address.lower():
+            staking_owner = self._adapter_staking_owner(adapter)
+            if staking_owner and new_position.owner.lower() == staking_owner.lower():
                 staked_positions = adapter.read_staked_positions([new_token_id])
                 staked_position = staked_positions.get(new_token_id)
                 if staked_position and self._matches_pool(pool, staked_position):
+                    if not restore_staked:
+                        return self._mark_manual_recovery(
+                            pool,
+                            old_token_id,
+                            "new token was manually staked while recovery requires UNSTAKED custody",
+                        )
                     self.journal.mark_status(
                         pool.chain,
                         old_token_id,
@@ -1063,7 +1220,7 @@ class ConfiguredPoolRebalancer:
                 old_token_id,
                 f"new token {new_token_id} has zero liquidity",
             )
-        if pool.pid is not None:
+        if restore_staked:
             log.info(
                 "stake recovery attempt pool=%s chain=%s old_tokenId=%s new_tokenId=%s",
                 pool.name,
@@ -1074,6 +1231,13 @@ class ConfiguredPoolRebalancer:
             stake_tx = adapter.stake(new_token_id)
             self._confirm_stake_with_retry(pool, adapter, old_token_id, new_token_id)
             self.journal.mark_status(pool.chain, old_token_id, PositionState.REMINTED, "stake", stake_tx, new_token_id)
+        else:
+            self.journal.mark_status(
+                pool.chain,
+                old_token_id,
+                PositionState.REMINTED_UNSTAKED,
+                new_token_id=new_token_id,
+            )
         try:
             burn_tx = adapter.burn_if_empty_and_owned(old_token_id)
             if burn_tx:
@@ -1086,16 +1250,88 @@ class ConfiguredPoolRebalancer:
             "pool": pool.name,
             "token_id": old_token_id,
             "new_token_id": new_token_id,
-            "state": PositionState.REMINTED.value if pool.pid is not None else PositionState.MINTED_UNSTAKED.value,
-            "recovery": "STAKE_RETRIED",
-            "action_taken": pool.pid is not None,
+            "state": PositionState.REMINTED.value if restore_staked else PositionState.REMINTED_UNSTAKED.value,
+            "recovery": "STAKE_RETRIED" if restore_staked else "UNSTAKED_MODE_CONFIRMED",
+            "action_taken": restore_staked,
         }
+
+    def _recover_unstaked_unwithdrawn(
+        self,
+        w3,
+        pool: PoolConfig,
+        adapter: DexAdapter,
+        job: dict,
+    ) -> dict:
+        old_token_id = int(job["old_token_id"])
+        position = self._position_from_job(pool, job)
+        if position is None:
+            return self._mark_manual_recovery(pool, old_token_id, "missing old range data for unstake recovery")
+        try:
+            live_position = adapter.read_npm_position(old_token_id)
+        except Exception as exc:
+            return self._mark_manual_recovery(pool, old_token_id, f"could not read unstaked token owner: {exc}")
+        staking_owner = self._adapter_staking_owner(adapter)
+        if live_position.owner.lower() != pool.bot_wallet.lower():
+            if staking_owner and live_position.owner.lower() == staking_owner.lower():
+                return self._mark_manual_recovery(
+                    pool,
+                    old_token_id,
+                    "unstake tx is recorded but NFT is still owned by staking contract",
+                )
+            return self._mark_manual_recovery(
+                pool,
+                old_token_id,
+                f"unstaked token owner mismatch: owner={live_position.owner}",
+            )
+
+        restore_staked = bool(position.is_staked)
+        position.is_staked = False
+        pre0, pre1 = adapter.read_balances(pool.bot_wallet)
+        slot0 = adapter.read_slot0()
+        withdraw_tx = adapter.decrease_collect_withdraw(position, slot0)
+        self.journal.mark_status(pool.chain, old_token_id, PositionState.WITHDRAWN_UNBURNED, "withdraw", withdraw_tx)
+        post0, post1 = self._read_recovered_balances_with_retry(adapter, pool, pre0, pre1)
+        self.journal.record_balance_snapshot(pool.chain, old_token_id, "post_withdraw", post0.raw, post1.raw)
+        receipt_inflows = self._receipt_token_inflows(w3, pool, withdraw_tx.tx_hash, pool.bot_wallet)
+        if receipt_inflows is None or (receipt_inflows[0] <= 0 and receipt_inflows[1] <= 0):
+            recovered0 = max(0, post0.raw - pre0.raw)
+            recovered1 = max(0, post1.raw - pre1.raw)
+        else:
+            recovered0, recovered1 = receipt_inflows
+        if recovered0 <= 0 and recovered1 <= 0:
+            reason = "unstake recovery withdraw produced no token inflows; manual recovery required"
+            self.journal.mark_recovery_error(pool.chain, old_token_id, reason)
+            return self._mark_manual_recovery(pool, old_token_id, reason)
+        self.journal.record_reservation(
+            pool.chain,
+            old_token_id,
+            pool.token0_address,
+            pool.token1_address,
+            recovered0,
+            recovered1,
+        )
+        repaired_position = PositionSnapshot(
+            **{
+                **position.__dict__,
+                "owner": pool.bot_wallet,
+                "is_staked": restore_staked,
+            }
+        )
+        return self._resume_mint_from_reservation(
+            w3,
+            pool,
+            adapter,
+            repaired_position,
+            recovered0,
+            recovered1,
+            allow_swap=True,
+        )
 
     def _recover_withdrawn_unminted(
         self,
         w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         job: dict,
     ) -> dict:
         old_token_id = int(job["old_token_id"])
@@ -1116,7 +1352,7 @@ class ConfiguredPoolRebalancer:
                     "next_action": "recover mint receipt and stake if valid",
                 },
             )
-            return self._recover_unknown_mint(pool, adapter, job, position, mint_tx_hash)
+            return self._recover_unknown_mint(w3, pool, adapter, job, position, mint_tx_hash)
         reservation = self._reservation_pair_from_job(job, pool)
         if reservation is None:
             return self._mark_manual_recovery(
@@ -1245,7 +1481,7 @@ class ConfiguredPoolRebalancer:
         self,
         w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         position: PositionSnapshot,
         swap_tx_hash: str,
         reserved0: int,
@@ -1398,10 +1634,131 @@ class ConfiguredPoolRebalancer:
         except Exception:
             return "unknown-rpc"
 
+    def _lookup_mint_tx_with_rpc_fallback(self, w3, pool: PoolConfig, token_id: int, tx_hash: str) -> dict:
+        attempts = [("primary", w3)]
+        for label, url in self._receipt_rpc_urls(pool):
+            attempts.append((label, self._web3_for_rpc(pool, url)))
+
+        errors = []
+        not_found_count = 0
+        for rpc_label, candidate_w3 in attempts:
+            try:
+                receipt = candidate_w3.eth.get_transaction_receipt(tx_hash)
+                log_block(
+                    log,
+                    logging.INFO,
+                    "mint tx lookup",
+                    pool_context(pool, old_token_id=token_id),
+                    {
+                        "stage": "mint_tx_lookup",
+                        "status": "RECEIPT_FOUND",
+                        "tx_hash": tx_hash,
+                        "rpc": rpc_label,
+                        "receipt_status": receipt.get("status"),
+                        "block": receipt.get("blockNumber"),
+                    },
+                )
+                return {"status": "RECEIPT_SUCCESS" if int(receipt.get("status", 0)) == 1 else "RECEIPT_REVERTED", "receipt": receipt, "rpc_label": rpc_label}
+            except TransactionNotFound:
+                pass
+            except Exception as exc:
+                errors.append(f"{rpc_label}: receipt: {exc}")
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "mint tx lookup",
+                    pool_context(pool, old_token_id=token_id),
+                    {
+                        "stage": "mint_tx_lookup",
+                        "status": "RECEIPT_LOOKUP_FAILED",
+                        "tx_hash": tx_hash,
+                        "rpc": rpc_label,
+                        "reason": exc,
+                    },
+                )
+                continue
+
+            try:
+                candidate_w3.eth.get_transaction(tx_hash)
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "mint tx lookup",
+                    pool_context(pool, old_token_id=token_id),
+                    {
+                        "stage": "mint_tx_lookup",
+                        "status": "TX_PENDING_OR_ACCEPTED",
+                        "tx_hash": tx_hash,
+                        "rpc": rpc_label,
+                        "next_action": "wait for receipt; do not retry mint",
+                    },
+                )
+                return {"status": "TX_PENDING_OR_ACCEPTED", "receipt": None, "rpc_label": rpc_label}
+            except TransactionNotFound:
+                not_found_count += 1
+                log_block(
+                    log,
+                    logging.INFO,
+                    "mint tx lookup",
+                    pool_context(pool, old_token_id=token_id),
+                    {
+                        "stage": "mint_tx_lookup",
+                        "status": "TX_NOT_FOUND_ON_RPC",
+                        "tx_hash": tx_hash,
+                        "rpc": rpc_label,
+                    },
+                )
+            except Exception as exc:
+                errors.append(f"{rpc_label}: tx: {exc}")
+                log_block(
+                    log,
+                    logging.WARNING,
+                    "mint tx lookup",
+                    pool_context(pool, old_token_id=token_id),
+                    {
+                        "stage": "mint_tx_lookup",
+                        "status": "TX_LOOKUP_FAILED",
+                        "tx_hash": tx_hash,
+                        "rpc": rpc_label,
+                        "reason": exc,
+                    },
+                )
+        if errors:
+            return {"status": "LOOKUP_INCONCLUSIVE", "receipt": None, "errors": errors}
+        log_block(
+            log,
+            logging.WARNING,
+            "mint tx not found",
+            pool_context(pool, old_token_id=token_id),
+            {
+                "stage": "mint_tx_lookup",
+                "status": "TX_NOT_FOUND",
+                "tx_hash": tx_hash,
+                "rpc_attempts": len(attempts),
+                "not_found_count": not_found_count,
+            },
+        )
+        return {"status": "TX_NOT_FOUND", "receipt": None}
+
+    @staticmethod
+    def _job_age_seconds(job: dict) -> float:
+        updated_at = job.get("updated_at")
+        if updated_at is None:
+            return 999999.0
+        if isinstance(updated_at, str):
+            try:
+                updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            except ValueError:
+                return 999999.0
+        if getattr(updated_at, "tzinfo", None) is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds())
+
     def _recover_unknown_mint(
         self,
+        w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         job: dict,
         position: PositionSnapshot,
         mint_tx_hash: str,
@@ -1421,11 +1778,67 @@ class ConfiguredPoolRebalancer:
             amount0_desired=self._int_metadata(job.get("amount0_desired")) or 0,
             amount1_desired=self._int_metadata(job.get("amount1_desired")) or 0,
         )
-        receipt = adapter._mint_receipt_from_result(
-            TxResult(tx_hash=mint_tx_hash, status="BROADCAST_UNKNOWN", metadata={"label": "mint"})
-        )
+        lookup = self._lookup_mint_tx_with_rpc_fallback(w3, pool, old_token_id, mint_tx_hash)
+        receipt = lookup.get("receipt")
         if receipt is None:
-            return self._mark_manual_recovery(pool, old_token_id, "mint tx exists but receipt is not available")
+            status = lookup.get("status")
+            if status == "TX_NOT_FOUND":
+                age_seconds = self._job_age_seconds(job)
+                if age_seconds >= 600:
+                    reason = (
+                        "mint hash not found on-chain after RPC fallback; "
+                        "clearing stale mint hash and retrying from reservation"
+                    )
+                    log_block(
+                        log,
+                        logging.WARNING,
+                        "mint hash cleared for retry",
+                        pool_context(pool, old_token_id=old_token_id),
+                        {
+                            "stage": "mint_tx_lookup",
+                            "status": "MINT_TX_NOT_FOUND",
+                            "mint_tx_hash": mint_tx_hash,
+                            "job_age_seconds": int(age_seconds),
+                            "reason": reason,
+                            "next_action": "retry mint from reservation",
+                        },
+                    )
+                    if hasattr(self.journal, "clear_mint_tx_for_retry"):
+                        self.journal.clear_mint_tx_for_retry(pool.chain, old_token_id, reason)
+                    else:
+                        self.journal.mark_status(
+                            pool.chain,
+                            old_token_id,
+                            PositionState.WITHDRAWN_UNBURNED,
+                            error_reason=reason,
+                        )
+                    self._notify_partial_action(
+                        pool,
+                        old_token_id,
+                        "mint",
+                        "MINT_TX_NOT_FOUND",
+                        reason,
+                        "retry mint from reservation",
+                        signed_tx_hash=mint_tx_hash,
+                    )
+                    repaired_job = {**job, "mint_tx_hash": None, "status": PositionState.WITHDRAWN_UNBURNED.value}
+                    return self._recover_withdrawn_unminted(w3, pool, adapter, repaired_job)
+                return self._mark_manual_recovery(
+                    pool,
+                    old_token_id,
+                    "mint tx not found on-chain yet; waiting before retrying mint",
+                )
+            if status == "TX_PENDING_OR_ACCEPTED":
+                return self._mark_manual_recovery(
+                    pool,
+                    old_token_id,
+                    "mint tx pending/accepted but receipt is not available",
+                )
+            return self._mark_manual_recovery(
+                pool,
+                old_token_id,
+                "mint tx lookup inconclusive; receipt is not available",
+            )
         if int(receipt.get("status", 0)) != 1:
             return self._mark_manual_recovery(pool, old_token_id, "mint tx exists but transaction reverted")
         new_token_id = adapter._new_token_id_from_mint_receipt(receipt)
@@ -1498,7 +1911,7 @@ class ConfiguredPoolRebalancer:
         self,
         w3,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         position: PositionSnapshot,
         reserved0: int,
         reserved1: int,
@@ -1832,12 +2245,14 @@ class ConfiguredPoolRebalancer:
                     f"{reason}; tx_status={mint_tx.status}; tx_hash={mint_tx.tx_hash}; "
                     f"signed_tx_hash={signed_hash}; next_action=journal recovery will inspect receipt"
                 )
+            mint_tx_label = None if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN" else "mint"
+            mint_tx_for_journal = None if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN" else mint_tx
             self.journal.mark_status(
                 pool.chain,
                 position.token_id,
                 PositionState.RECOVERY_REQUIRED,
-                "mint",
-                mint_tx,
+                mint_tx_label,
+                mint_tx_for_journal,
                 error_reason=f"recovery mint reconciliation required: {reason}",
             )
             self.journal.mark_recovery_error(
@@ -1845,6 +2260,16 @@ class ConfiguredPoolRebalancer:
                 position.token_id,
                 f"recovery mint reconciliation required: {reason}",
             )
+            if mint_tx and mint_tx.status == "BROADCAST_UNKNOWN":
+                self._notify_partial_action(
+                    pool,
+                    position.token_id,
+                    "mint",
+                    "MINT_BROADCAST_UNKNOWN",
+                    f"recovery mint broadcast unknown: {reason}",
+                    "recovery will retry mint only after confirming the signed hash is not on-chain",
+                    signed_tx_hash=(mint_tx.metadata or {}).get("signed_tx_hash"),
+                )
             self._notify_recovery_required(pool, position.token_id, f"recovery mint reconciliation required: {reason}")
             return {
                 "pool": pool.name,
@@ -1856,10 +2281,15 @@ class ConfiguredPoolRebalancer:
             }
         actual_lower_percent = price_percent_from_tick_delta(swap_plan.new_tick_lower - slot_for_mint.tick)
         actual_upper_percent = price_percent_from_tick_delta(swap_plan.new_tick_upper - slot_for_mint.tick)
+        minted_state = (
+            PositionState.MINTED_UNSTAKED
+            if position.is_staked
+            else PositionState.REMINTED_UNSTAKED
+        )
         self.journal.mark_status(
             pool.chain,
             position.token_id,
-            PositionState.MINTED_UNSTAKED,
+            minted_state,
             "mint",
             mint_tx,
             new_token_id,
@@ -1870,8 +2300,8 @@ class ConfiguredPoolRebalancer:
             range_upper_percent=actual_upper_percent,
             range_percent_source=swap_plan.metadata.get("range_percent_source"),
         )
-        final_state = PositionState.MINTED_UNSTAKED
-        if pool.pid is not None:
+        final_state = minted_state
+        if position.is_staked:
             try:
                 stake_tx = adapter.stake(new_token_id)
                 self._confirm_stake_with_retry(pool, adapter, position.token_id, new_token_id)
@@ -1931,7 +2361,7 @@ class ConfiguredPoolRebalancer:
     def _confirm_stake_with_retry(
         self,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         old_token_id: int,
         new_token_id: int,
         attempts: int = 4,
@@ -2093,7 +2523,7 @@ class ConfiguredPoolRebalancer:
     def _notify_inactive_farm_if_needed(
         self,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         positions: dict[int, PositionSnapshot],
     ) -> None:
         if self.config.dry_run or not self.notifier.enabled():
@@ -2190,7 +2620,7 @@ class ConfiguredPoolRebalancer:
     def _position_from_job(self, pool: PoolConfig, job: dict) -> PositionSnapshot | None:
         if job.get("old_tick_lower") is None or job.get("old_tick_upper") is None:
             return None
-        if not pool.token0_address or not pool.token1_address or pool.fee is None:
+        if not pool.token0_address or not pool.token1_address or (pool.fee is None and pool.tick_spacing is None):
             return None
         return PositionSnapshot(
             token_id=int(job["old_token_id"]),
@@ -2198,13 +2628,26 @@ class ConfiguredPoolRebalancer:
             pool_address=pool.pool_address,
             token0=Web3.to_checksum_address(pool.token0_address),
             token1=Web3.to_checksum_address(pool.token1_address),
-            fee=int(pool.fee),
+            fee=int(pool.tick_spacing or pool.fee),
             tick_lower=int(job["old_tick_lower"]),
             tick_upper=int(job["old_tick_upper"]),
             liquidity=0,
             pid=pool.pid,
-            is_staked=False,
+            is_staked=self._job_restore_staked(job, pool),
         )
+
+    @staticmethod
+    def _job_restore_staked(job: dict, pool: PoolConfig, adapter=None) -> bool:
+        mode = str(job.get("restore_stake_mode") or "").upper()
+        if mode == StakeMode.STAKED.value:
+            return True
+        if mode == StakeMode.UNSTAKED.value:
+            return False
+        if adapter is not None:
+            return ConfiguredPoolRebalancer._adapter_should_stake(pool, adapter)
+        if pool.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            return pool.staking_address is not None
+        return pool.pid is not None
 
     def _snapshot_pair_from_job(
         self,
@@ -2237,7 +2680,7 @@ class ConfiguredPoolRebalancer:
     def _reservation_coverage_error(
         self,
         pool: PoolConfig,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         stage: str,
     ) -> str | None:
         reservations = self.journal.fetch_wallet_token_reservations(pool.chain, pool.bot_wallet)
@@ -2262,10 +2705,11 @@ class ConfiguredPoolRebalancer:
         return None
 
     def _matches_pool(self, pool: PoolConfig, position: PositionSnapshot) -> bool:
+        expected_fee_or_spacing = int(pool.tick_spacing or pool.fee or 0)
         return (
             position.token0.lower() == str(pool.token0_address).lower()
             and position.token1.lower() == str(pool.token1_address).lower()
-            and int(position.fee) == int(pool.fee)
+            and int(position.fee) == expected_fee_or_spacing
         )
 
     @staticmethod
@@ -2501,7 +2945,7 @@ class ConfiguredPoolRebalancer:
     def _read_post_swap_balances_with_retry(
         self,
         w3,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         pool: PoolConfig,
         position: PositionSnapshot,
         post_withdraw0,
@@ -2663,7 +3107,7 @@ class ConfiguredPoolRebalancer:
         except (TypeError, ValueError):
             return None
 
-    def _module_reward_update(self, pool: PoolConfig, adapter: PancakeV3MasterChefAdapter, reward_token, pre_reward):
+    def _module_reward_update(self, pool: PoolConfig, adapter: DexAdapter, reward_token, pre_reward):
         if not reward_token or pre_reward is None:
             return None
         post_reward = adapter.read_token_balance(reward_token, pool.bot_wallet)
@@ -2685,7 +3129,7 @@ class ConfiguredPoolRebalancer:
 
     def _read_recovered_balances_with_retry(
         self,
-        adapter: PancakeV3MasterChefAdapter,
+        adapter: DexAdapter,
         pool: PoolConfig,
         pre0,
         pre1,
@@ -2811,9 +3255,35 @@ class ConfiguredPoolRebalancer:
             return None
         return lower_percent, upper_percent
 
+    @staticmethod
+    def _adapter_should_stake(pool: PoolConfig, adapter) -> bool:
+        if hasattr(adapter, "should_stake"):
+            try:
+                return bool(adapter.should_stake())
+            except Exception:
+                return False
+        return pool.pid is not None
+
+    @staticmethod
+    def _adapter_staking_owner(adapter) -> str | None:
+        if hasattr(adapter, "staking_owner_address"):
+            try:
+                return adapter.staking_owner_address()
+            except Exception:
+                return None
+        return getattr(adapter, "masterchef_address", None)
+
+    @staticmethod
+    def _adapter_reward_token(adapter) -> str | None:
+        if hasattr(adapter, "reward_token_address"):
+            try:
+                return adapter.reward_token_address()
+            except Exception:
+                return None
+        return None
+
     def _build_adapter(self, w3, pool: PoolConfig, executor: TxExecutor):
-        if pool.dex_type == DexType.PANCAKE_V3_MASTERCHEF:
-            return PancakeV3MasterChefAdapter(w3, pool, executor)
-        if pool.dex_type == DexType.AERODROME_GAUGE:
-            return AerodromeGaugeAdapter(w3, pool, executor)
+        adapter_cls = ADAPTER_REGISTRY.get(pool.dex_type)
+        if adapter_cls:
+            return adapter_cls(w3, pool, executor)
         raise ValueError(f"unsupported dex_type={pool.dex_type}")

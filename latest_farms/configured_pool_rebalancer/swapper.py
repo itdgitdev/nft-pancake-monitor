@@ -84,13 +84,28 @@ class V3Swapper:
         }
         try:
             response = requests.get(url, params=params, headers=headers, timeout=30)
-            data = response.json()
+            if not self._response_is_success(response):
+                self._log_http_failure("kyber route", response)
+                return None
+            try:
+                data = response.json()
+            except ValueError:
+                self._log_parse_failure("kyber route", response)
+                return None
             if data.get("code") == 0:
                 return data.get("data")
-            log.warning("kyber route unavailable chain=%s response=%s", self.chain_name, data)
+            log.warning(
+                "kyber route unavailable chain=%s code=%s message=%s",
+                self.chain_name,
+                data.get("code"),
+                str(data.get("message") or data.get("error") or "")[:300],
+            )
             return None
-        except Exception as exc:
-            log.warning("kyber route error chain=%s token_in=%s token_out=%s amount=%s error=%s", self.chain_name, token_in, token_out, amount_wei, exc)
+        except Timeout:
+            log.warning("kyber route timeout chain=%s amount=%s", self.chain_name, amount_wei)
+            return None
+        except RequestException as exc:
+            log.warning("kyber route request error chain=%s amount=%s error=%s", self.chain_name, amount_wei, exc)
             return None
 
     def build_kyber_swap_data(self, route_summary: dict, sender_address: str, slippage_bps: int = 10) -> dict | None:
@@ -108,13 +123,28 @@ class V3Swapper:
         }
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=30)
-            data = response.json()
+            if not self._response_is_success(response):
+                self._log_http_failure("kyber build", response)
+                return None
+            try:
+                data = response.json()
+            except ValueError:
+                self._log_parse_failure("kyber build", response)
+                return None
             if data.get("code") == 0:
                 return data.get("data")
-            log.warning("kyber build unavailable chain=%s response=%s", self.chain_name, data)
+            log.warning(
+                "kyber build unavailable chain=%s code=%s message=%s",
+                self.chain_name,
+                data.get("code"),
+                str(data.get("message") or data.get("error") or "")[:300],
+            )
             return None
-        except Exception as exc:
-            log.warning("kyber build error chain=%s error=%s", self.chain_name, exc)
+        except Timeout:
+            log.warning("kyber build timeout chain=%s", self.chain_name)
+            return None
+        except RequestException as exc:
+            log.warning("kyber build request error chain=%s error=%s", self.chain_name, exc)
             return None
 
     def get_0x_swap_quote(
@@ -142,9 +172,13 @@ class V3Swapper:
             log.info("0x quote request chain=%s amount=%s", self.chain_name, amount_in_wei)
             response = requests.get(self.api_base_url_0x, params=params, headers=headers, timeout=15)
             if response.status_code != 200:
-                log.warning("0x quote failed chain=%s status=%s body=%s", self.chain_name, response.status_code, response.text[:300])
+                self._log_http_failure("0x quote", response)
                 return None
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError:
+                self._log_parse_failure("0x quote", response)
+                return None
             tx_data = data.get("transaction") or {}
             if not tx_data:
                 log.warning("0x quote missing transaction data chain=%s response=%s", self.chain_name, data)
@@ -210,7 +244,14 @@ class V3Swapper:
         try:
             log.info("okx quote request chain=%s amount=%s", self.chain_name, amount_in_wei)
             response = requests.get(url, params=params, headers=headers, timeout=15)
-            data = response.json()
+            if not self._response_is_success(response):
+                self._log_http_failure("okx quote", response)
+                return None
+            try:
+                data = response.json()
+            except ValueError:
+                self._log_parse_failure("okx quote", response)
+                return None
             if data.get("code") != "0" or not data.get("data"):
                 log.warning("okx quote failed chain=%s response=%s", self.chain_name, data)
                 return None
@@ -243,9 +284,45 @@ class V3Swapper:
                 "route_display": " -> ".join(route_names) if route_names else "OKX Route",
                 "price_impact": float(router_result.get("priceImpactPercent", 0) or 0),
             }
-        except Exception as exc:
-            log.warning("okx quote error chain=%s error=%s", self.chain_name, exc)
+        except Timeout:
+            log.warning("okx quote timeout chain=%s amount=%s", self.chain_name, amount_in_wei)
             return None
+        except RequestException as exc:
+            log.warning("okx quote request error chain=%s error=%s", self.chain_name, exc)
+            return None
+        except Exception as exc:
+            log.warning("okx quote parse error chain=%s error=%s", self.chain_name, exc)
+            return None
+
+    def _log_http_failure(self, operation: str, response) -> None:
+        log.warning(
+            "%s HTTP error chain=%s status=%s content_type=%s preview=%s",
+            operation,
+            self.chain_name,
+            response.status_code,
+            getattr(response, "headers", {}).get("Content-Type", ""),
+            self._response_preview(response),
+        )
+
+    def _log_parse_failure(self, operation: str, response) -> None:
+        log.warning(
+            "%s JSON decode error chain=%s status=%s content_type=%s preview=%s",
+            operation,
+            self.chain_name,
+            response.status_code,
+            getattr(response, "headers", {}).get("Content-Type", ""),
+            self._response_preview(response),
+        )
+
+    @staticmethod
+    def _response_preview(response) -> str:
+        text = str(getattr(response, "text", "") or "")
+        return " ".join(text.split())[:300]
+
+    @staticmethod
+    def _response_is_success(response) -> bool:
+        status = int(getattr(response, "status_code", 200) or 0)
+        return 200 <= status < 300
 
     def get_best_swap_route(
         self,

@@ -7,7 +7,19 @@ from typing import Any
 
 class DexType(str, Enum):
     PANCAKE_V3_MASTERCHEF = "pancake_v3_masterchef"
+    PANCAKE_V3 = "pancake_v3"
+    AERODROME_V3 = "aerodrome_v3"
     AERODROME_GAUGE = "aerodrome_gauge"
+
+
+class PositionStrategy(str, Enum):
+    FARM = "farm"
+    FEE = "fee"
+
+
+class StakeMode(str, Enum):
+    STAKED = "STAKED"
+    UNSTAKED = "UNSTAKED"
 
 
 class PositionState(str, Enum):
@@ -15,9 +27,11 @@ class PositionState(str, Enum):
     OUT_OF_RANGE = "OUT_OF_RANGE"
     PLANNED = "PLANNED"
     WITHDRAWN_UNBURNED = "WITHDRAWN_UNBURNED"
+    UNSTAKED_UNWITHDRAWN = "UNSTAKED_UNWITHDRAWN"
     SWAP_PENDING = "SWAP_PENDING"
     SWAP_BLOCKED = "SWAP_BLOCKED"
     MINTED_UNSTAKED = "MINTED_UNSTAKED"
+    REMINTED_UNSTAKED = "REMINTED_UNSTAKED"
     REMINTED = "REMINTED"
     BURNED = "BURNED"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
@@ -36,6 +50,16 @@ class GasPolicy:
 
 
 @dataclass(frozen=True)
+class AutoCompoundConfig:
+    enabled: bool = False
+    min_interval_seconds: int = 21_600
+    min_compound_usd: float = 5.0
+    gas_cost_multiplier: float = 3.0
+    min_range_buffer_ratio: float = 0.10
+    max_jobs_per_cycle: int = 1
+
+
+@dataclass(frozen=True)
 class PoolConfig:
     name: str
     chain: str
@@ -44,6 +68,7 @@ class PoolConfig:
     managed_wallets: tuple[str, ...]
     bot_wallet: str
     private_key_env: str = "PARASITE_BOT_PRIVATE_KEY"
+    private_key_prefix_env: str = "CONFIGURED_REBALANCER_PRIVATE_KEY_PREFIX"
     token0_address: str | None = None
     token1_address: str | None = None
     token0_decimals: int | None = None
@@ -70,6 +95,16 @@ class PoolConfig:
     rebalance_range_mode: str | None = None
     rebalance_range_lower_percent: float | None = None
     rebalance_range_upper_percent: float | None = None
+    auto_compound: AutoCompoundConfig = field(default_factory=AutoCompoundConfig)
+    position_strategy: PositionStrategy | None = None
+
+    @property
+    def expected_position_strategy(self) -> PositionStrategy:
+        if self.position_strategy is not None:
+            return self.position_strategy
+        if self.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            return PositionStrategy.FARM
+        return PositionStrategy.FARM if self.pid is not None else PositionStrategy.FEE
 
 
 @dataclass(frozen=True)
@@ -127,6 +162,25 @@ class PositionSnapshot:
     @property
     def width(self) -> int:
         return self.tick_upper - self.tick_lower
+
+
+@dataclass(frozen=True)
+class CompoundCandidate:
+    chain: str
+    pool_name: str
+    pool_address: str
+    wallet: str
+    npm_address: str
+    token_id: int
+    stake_mode: StakeMode
+    anchor_block: int | None = None
+
+
+@dataclass
+class RebalanceCycleOutcome:
+    records: list[dict[str, Any]] = field(default_factory=list)
+    compound_candidates: dict[str, tuple[CompoundCandidate, ...]] = field(default_factory=dict)
+    blocked_wallets: set[str] = field(default_factory=set)
 
 
 @dataclass

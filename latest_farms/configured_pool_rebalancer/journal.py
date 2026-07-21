@@ -72,6 +72,7 @@ class RebalanceJournal:
                 ("discord_partial_notified_at", "DATETIME NULL"),
                 ("discord_partial_notify_key", "VARCHAR(180) NULL"),
                 ("discord_partial_notify_error", "VARCHAR(500) NULL"),
+                ("unstake_tx_hash", "VARCHAR(66) NULL"),
                 ("pre_balance0_raw", "VARCHAR(80) NULL"),
                 ("pre_balance1_raw", "VARCHAR(80) NULL"),
                 ("post_withdraw_balance0_raw", "VARCHAR(80) NULL"),
@@ -86,6 +87,7 @@ class RebalanceJournal:
                 ("recovery_attempts", "INT NOT NULL DEFAULT 0"),
                 ("last_recovery_error", "VARCHAR(500) NULL"),
                 ("recovery_notified_at", "DATETIME NULL"),
+                ("restore_stake_mode", "VARCHAR(10) NULL"),
             ]:
                 self._add_column_if_missing(cursor, "configured_rebalance_jobs", column_name, column_def)
             migrate_position_cache_snapshot_table(cursor)
@@ -178,6 +180,7 @@ class RebalanceJournal:
                     ON DUPLICATE KEY UPDATE
                         status=IF(
                             withdraw_tx_hash IS NULL
+                            AND unstake_tx_hash IS NULL
                             AND mint_tx_hash IS NULL
                             AND stake_tx_hash IS NULL
                             AND burn_tx_hash IS NULL,
@@ -235,7 +238,12 @@ class RebalanceJournal:
     ) -> None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         assignments: list[tuple[str, object]] = [("status", status.value), ("updated_at", now)]
-        success_statuses = {PositionState.MINTED_UNSTAKED, PositionState.REMINTED, PositionState.BURNED}
+        success_statuses = {
+            PositionState.MINTED_UNSTAKED,
+            PositionState.REMINTED_UNSTAKED,
+            PositionState.REMINTED,
+            PositionState.BURNED,
+        }
         if new_token_id is not None:
             assignments.append(("new_token_id", new_token_id))
         if mint_tick is not None:
@@ -273,7 +281,7 @@ class RebalanceJournal:
             assignments.append(("recovery_notified_at", None))
         if tx_label and tx_result:
             column = f"{tx_label}_tx_hash"
-            if column in {"swap_tx_hash", "withdraw_tx_hash", "mint_tx_hash", "stake_tx_hash", "burn_tx_hash"}:
+            if column in {"swap_tx_hash", "unstake_tx_hash", "withdraw_tx_hash", "mint_tx_hash", "stake_tx_hash", "burn_tx_hash"}:
                 assignments.append((column, tx_result.tx_hash))
 
         conn = get_connection()
@@ -305,6 +313,7 @@ class RebalanceJournal:
                     "claimed_reward_usd",
                     "claimed_reward_source",
                     "last_recovery_error",
+                    "unstake_tx_hash",
                     "reserved_token0_raw",
                     "reserved_token1_raw",
                     "reservation_updated_at",
@@ -334,6 +343,32 @@ class RebalanceJournal:
         if cursor.fetchone():
             return
         log.warning("job status update matched no row chain=%s old_token_id=%s", chain, old_token_id)
+
+    def set_restore_stake_mode(self, chain: str, old_token_id: int, mode: str) -> None:
+        normalized = str(mode).upper()
+        if normalized not in {"STAKED", "UNSTAKED"}:
+            raise ValueError(f"invalid restore stake mode: {mode}")
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE configured_rebalance_jobs
+                SET restore_stake_mode=%s, updated_at=%s
+                WHERE chain=%s AND old_token_id=%s
+                """,
+                (
+                    normalized,
+                    datetime.now(timezone.utc).replace(tzinfo=None),
+                    chain,
+                    int(old_token_id),
+                ),
+            )
+            self._warn_if_missing_job(cursor, chain, old_token_id)
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
 
     def record_balance_snapshot(
         self,
@@ -481,6 +516,59 @@ class RebalanceJournal:
             except mysql.connector.Error as exc:
                 if exc.errno != 1054:
                     raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    def clear_mint_tx_for_retry(self, chain: str, old_token_id: int, reason: str) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            try:
+                cursor.execute(
+                    """
+                    UPDATE configured_rebalance_jobs
+                    SET mint_tx_hash=NULL,
+                        status=%s,
+                        error_reason=%s,
+                        last_recovery_error=%s,
+                        updated_at=%s
+                    WHERE chain=%s AND old_token_id=%s
+                    """,
+                    (
+                        PositionState.WITHDRAWN_UNBURNED.value,
+                        reason[:500],
+                        reason[:500],
+                        now,
+                        chain,
+                        int(old_token_id),
+                    ),
+                )
+                self._warn_if_missing_job(cursor, chain, old_token_id)
+                conn.commit()
+            except mysql.connector.Error as exc:
+                if exc.errno != 1054:
+                    raise
+                cursor.execute(
+                    """
+                    UPDATE configured_rebalance_jobs
+                    SET mint_tx_hash=NULL,
+                        status=%s,
+                        error_reason=%s,
+                        updated_at=%s
+                    WHERE chain=%s AND old_token_id=%s
+                    """,
+                    (
+                        PositionState.WITHDRAWN_UNBURNED.value,
+                        reason[:500],
+                        now,
+                        chain,
+                        int(old_token_id),
+                    ),
+                )
+                self._warn_if_missing_job(cursor, chain, old_token_id)
+                conn.commit()
         finally:
             cursor.close()
             conn.close()
@@ -715,13 +803,13 @@ class RebalanceJournal:
             try:
                 cursor.execute(
                     """
-                    SELECT old_token_id, new_token_id, status, wallet_address,
+                    SELECT old_token_id, new_token_id, status, wallet_address, updated_at,
                            discord_pending_notified_at
                     FROM configured_rebalance_jobs
                     WHERE chain=%s
                       AND LOWER(pool_address)=LOWER(%s)
                       AND LOWER(wallet_address)=LOWER(%s)
-                      AND status IN ('REMINTED', 'BURNED', 'MINTED_UNSTAKED')
+                      AND status IN ('REMINTED', 'REMINTED_UNSTAKED', 'BURNED', 'MINTED_UNSTAKED')
                       AND new_token_id IS NOT NULL
                       AND discord_pnl_notified_at IS NULL
                     ORDER BY updated_at ASC, id ASC
@@ -775,13 +863,14 @@ class RebalanceJournal:
                     SELECT old_token_id, new_token_id, status, wallet_address,
                            old_tick_lower, old_tick_upper, new_tick_lower, new_tick_upper,
                            amount0_desired, amount1_desired,
-                           swap_tx_hash, withdraw_tx_hash, mint_tx_hash, stake_tx_hash, burn_tx_hash,
+                           swap_tx_hash, unstake_tx_hash, withdraw_tx_hash, mint_tx_hash, stake_tx_hash, burn_tx_hash,
                            pre_balance0_raw, pre_balance1_raw,
                            post_withdraw_balance0_raw, post_withdraw_balance1_raw,
                            post_swap_balance0_raw, post_swap_balance1_raw,
                            reserved_token0_address, reserved_token1_address,
                            reserved_token0_raw, reserved_token1_raw, reservation_updated_at,
-                           recovery_attempts, last_recovery_error, recovery_notified_at, error_reason
+                           recovery_attempts, last_recovery_error, recovery_notified_at, error_reason,
+                           restore_stake_mode
                     FROM configured_rebalance_jobs
                     WHERE chain=%s
                       AND LOWER(pool_address)=LOWER(%s)
@@ -791,6 +880,12 @@ class RebalanceJournal:
                                 status='MINTED_UNSTAKED'
                                 AND new_token_id IS NOT NULL
                                 AND stake_tx_hash IS NULL
+                                AND (restore_stake_mode IS NULL OR restore_stake_mode='STAKED')
+                            )
+                            OR (
+                                status='UNSTAKED_UNWITHDRAWN'
+                                AND unstake_tx_hash IS NOT NULL
+                                AND withdraw_tx_hash IS NULL
                             )
                             OR (
                                 status IN ('WITHDRAWN_UNBURNED', 'SWAP_BLOCKED', 'SWAP_PENDING', 'RECOVERY_REQUIRED', 'FAILED')
