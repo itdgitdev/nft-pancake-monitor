@@ -43,16 +43,16 @@
       }
     },
     {
-      "name": "USDC-VFY-0.05",
+      "name": "USDC-PROS-0.05",
       "dex_type": "aerodrome_v3",
       "wallet": "main",
       "chain": "BAS",
-      "pool_address": "0xf81d3c731b3ac5a4dfc968f514860bedeebebaf2",
+      "pool_address": "0x24bddff0577d1ee32f92a0b92296ca9702611c6a",
       "bootstrap_start_block": null,
       "rebalance_range": {
         "mode": "price_percent",
-        "lower_percent": -9.52,
-        "upper_percent": 15.03
+        "lower_percent": -2.79,
+        "upper_percent": 3.21
       }
     },
     {
