@@ -1,4 +1,10 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from web3 import Web3
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 MASTERCHEF_V3_ADDRESSES = {
     "ETH": "0x556B9306565093C855AEA9AE92A594704c2Cd59e",
@@ -19,6 +25,27 @@ NPM_ADDRESSES = {
     "LIN": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
     "MON": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
     "POL": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364"
+}
+
+AERODROME_FACTORY_NPM_ADDRESSES = {
+    "BAS": {
+        Web3.to_checksum_address("0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"):
+            Web3.to_checksum_address("0x827922686190790b37229fd06084350E74485b72"),
+        Web3.to_checksum_address("0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a"):
+            Web3.to_checksum_address("0xa990C6a764b73BF43cee5Bb40339c3322FB9D55F"),
+        Web3.to_checksum_address("0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"):
+            Web3.to_checksum_address("0xe1f8cd9AC4e4A65F54f38a5CdAfCA44f6dD68b53"),
+    }
+}
+
+AERODROME_NPM_ADDRESSES = {
+    chain: list(factory_npm_map.values())
+    for chain, factory_npm_map in AERODROME_FACTORY_NPM_ADDRESSES.items()
+}
+
+AERODROME_FACTORY_ADDRESSES = {
+    chain: next(iter(factory_npm_map))
+    for chain, factory_npm_map in AERODROME_FACTORY_NPM_ADDRESSES.items()
 }
 
 FACTORY_ADDRESSES = {
@@ -83,7 +110,7 @@ API_KEYS = {
 }
 
 # API KEY RPC Infura
-API_KEY_INFURA = "afb06acf1c3542aca75c89203c9f9a28"
+API_KEY_INFURA = os.getenv("API_KEY_INFURA")
 RPC_URLS = {
     "BNB": f"https://bsc-mainnet.infura.io/v3/{API_KEY_INFURA}",
     "ETH": f"https://mainnet.infura.io/v3/{API_KEY_INFURA}",
@@ -95,9 +122,9 @@ RPC_URLS = {
     "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA}",
 }
 
-API_KEY_INFURA_1 = "afb06acf1c3542aca75c89203c9f9a28"
-API_KEY_INFURA_2 = "18a1946eec9d4e8cb7a08516809a4cdb"
-API_KEY_INFURA_3 = "bad651c85f224ff59de5a4bd9c90aa30"
+API_KEY_INFURA_1 = os.getenv("API_KEY_INFURA_1")
+API_KEY_INFURA_2 = os.getenv("API_KEY_INFURA_2")
+API_KEY_INFURA_3 = os.getenv("API_KEY_INFURA_3")
 RPC_URLS_2 = {
     "BNB": f"https://bsc-mainnet.infura.io/v3/{API_KEY_INFURA_1}",
     "ETH": f"https://mainnet.infura.io/v3/{API_KEY_INFURA_2}",
@@ -109,8 +136,9 @@ RPC_URLS_2 = {
     "MON": f"https://monad-mainnet.infura.io/v3/{API_KEY_INFURA_2}",
 }
 
-ALCHEMY_API_KEY = "xA7-sWnseDzu0v8MsC6J9GpilYRgMtqW"
-MORALIS_API_KEY = "7fe3328c4535474d9ac5952534d50fcb"
+ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
+ALCHEMY_NFT_API_KEY = os.getenv("ALCHEMY_NFT_API_KEY")
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
 
 RPC_BACKUP_LIST = {
     "BNB": [
@@ -135,11 +163,11 @@ RPC_BACKUP_LIST = {
     ]
 }
 
-SWAPPER_0X_API_KEY = "dfc27316-a8fe-4a4b-aa74-b8f2e9c49559"
-SWAPPER_OKX_API_KEY = "1ef5d201-1cec-46db-9658-c58a67008797"
-SWAPPER_OKX_SECRET_KEY = "E05BA24E99B675FC9E9B9F7EE32CD232"
-SWAPPER_OKX_PASSPHRASE = "@Shin12398"
-SWAPPER_KYBER_CLIENT_ID = "NftApp"
+SWAPPER_0X_API_KEY = os.getenv("SWAPPER_0X_API_KEY")
+SWAPPER_OKX_API_KEY = os.getenv("SWAPPER_OKX_API_KEY")
+SWAPPER_OKX_SECRET_KEY = os.getenv("SWAPPER_OKX_SECRET_KEY")
+SWAPPER_OKX_PASSPHRASE = os.getenv("SWAPPER_OKX_PASSPHRASE")
+SWAPPER_KYBER_CLIENT_ID = os.getenv("SWAPPER_KYBER_CLIENT_ID")
 
 CHAIN_ID_MAP = {
     "BNB": "56",
@@ -174,6 +202,3 @@ BLACKLIST_POOLS = {
     "ERA": [],
     "MON": []
 }
-
-# DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1377961748925124681/4L4i0oxq6PD1jLlBUV2IxH-G2vobb-ESm2VhKWL30dQztF4sRVg8IkgOoWe4W2EB0IFS"
-# DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1386555618751549520/i6GTfThX2VckPF4isp9ktn7ds1B0Ik7YWGGPR016nCO79uPIqm4ukYXPK-PR21_YvYyT"
