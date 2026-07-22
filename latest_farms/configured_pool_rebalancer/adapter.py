@@ -2018,7 +2018,7 @@ class AerodromeV3GaugeAdapter(PancakeV3MasterChefAdapter):
                 "gauge": self.gauge_address,
             },
         )
-        return self.executor.send(self.gauge.functions.deposit(int(token_id)), "stake", gas=450000)
+        return self.executor.send(self.gauge.functions.deposit(int(token_id)), "stake")
 
     def burn_if_empty_and_owned(self, token_id: int) -> TxResult | None:
         if not self.pool.execute_burn:

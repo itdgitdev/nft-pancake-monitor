@@ -39,6 +39,7 @@ from .v3_math import price_percent_from_tick_delta
 
 log = logging.getLogger("configured_pool_rebalancer")
 TRANSFER_TOPIC = "0x" + Web3.keccak(text="Transfer(address,address,uint256)").hex().lower().replace("0x", "")
+MAX_STAKE_RECOVERY_ATTEMPTS = 3
 
 ADAPTER_REGISTRY = {
     DexType.PANCAKE_V3_MASTERCHEF: PancakeV3MasterChefAdapter,
@@ -886,26 +887,56 @@ class ConfiguredPoolRebalancer:
                 )
 
                 if restore_staked:
+                    stake_tx = None
                     try:
                         stake_tx = adapter.stake(new_token_id)
-                        self._confirm_stake_with_retry(pool, adapter, position.token_id, new_token_id)
+                        stake_confirmed = self._confirm_stake_with_retry(
+                            pool,
+                            adapter,
+                            position.token_id,
+                            new_token_id,
+                        )
                     except Exception as exc:
                         reason = f"stake failed: {exc}"
+                        failed_state = (
+                            PositionState.MINTED_UNSTAKED
+                            if self._is_definite_prebroadcast_stake_error(exc)
+                            else PositionState.RECOVERY_REQUIRED
+                        )
                         self.journal.mark_status(
                             pool.chain,
                             position.token_id,
-                            PositionState.MINTED_UNSTAKED,
+                            failed_state,
                             error_reason=reason,
                         )
-                        self._notify_partial_action(
-                            pool,
+                        if failed_state == PositionState.MINTED_UNSTAKED:
+                            self._notify_partial_action(
+                                pool,
+                                position.token_id,
+                                "stake",
+                                failed_state,
+                                reason,
+                                "recovery will retry staking the minted NFT",
+                                new_token_id=new_token_id,
+                            )
+                        else:
+                            self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                            self._notify_recovery_required(pool, position.token_id, reason)
+                        self._notify_discord_pnl_after_delay(pool, position.owner, position.token_id, new_token_id)
+                        return
+                    if not stake_confirmed:
+                        reason = "stake transaction succeeded but staking contract membership was not confirmed"
+                        self.journal.mark_status(
+                            pool.chain,
                             position.token_id,
+                            PositionState.RECOVERY_REQUIRED,
                             "stake",
-                            PositionState.MINTED_UNSTAKED,
-                            reason,
-                            "recovery will retry staking the minted NFT",
-                            new_token_id=new_token_id,
+                            stake_tx,
+                            new_token_id,
+                            error_reason=reason,
                         )
+                        self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                        self._notify_recovery_required(pool, position.token_id, reason)
                         self._notify_discord_pnl_after_delay(pool, position.owner, position.token_id, new_token_id)
                         return
                     self.journal.mark_status(pool.chain, position.token_id, PositionState.REMINTED, "stake", stake_tx, new_token_id)
@@ -1111,6 +1142,41 @@ class ConfiguredPoolRebalancer:
                 if result.get("action_taken"):
                     action_count += 1
             except Exception as exc:
+                recovery_attempt = int(job.get("recovery_attempts") or 0) + 1
+                retry_stake = (
+                    status == PositionState.MINTED_UNSTAKED.value
+                    and recovery_attempt < MAX_STAKE_RECOVERY_ATTEMPTS
+                    and self._is_definite_prebroadcast_stake_error(exc)
+                )
+                if retry_stake:
+                    reason = f"partial recovery failed: {exc}"
+                    log.warning(
+                        "stake recovery deferred pool=%s tokenId=%s attempt=%s/%s reason=%s",
+                        pool.name,
+                        old_token_id,
+                        recovery_attempt,
+                        MAX_STAKE_RECOVERY_ATTEMPTS,
+                        exc,
+                    )
+                    self.journal.mark_status(
+                        pool.chain,
+                        old_token_id,
+                        PositionState.MINTED_UNSTAKED,
+                        error_reason=reason,
+                    )
+                    self.journal.mark_recovery_error(pool.chain, old_token_id, reason)
+                    out.append(
+                        {
+                            "pool": pool.name,
+                            "token_id": old_token_id,
+                            "state": PositionState.MINTED_UNSTAKED.value,
+                            "recovery": "STAKE_RETRY_QUEUED",
+                            "recovery_attempt": recovery_attempt,
+                            "error": str(exc),
+                        }
+                    )
+                    action_count += 1
+                    continue
                 log_block(
                     log,
                     logging.ERROR,
@@ -1229,7 +1295,29 @@ class ConfiguredPoolRebalancer:
                 new_token_id,
             )
             stake_tx = adapter.stake(new_token_id)
-            self._confirm_stake_with_retry(pool, adapter, old_token_id, new_token_id)
+            stake_confirmed = self._confirm_stake_with_retry(pool, adapter, old_token_id, new_token_id)
+            if not stake_confirmed:
+                reason = "stake transaction succeeded but staking contract membership was not confirmed"
+                self.journal.mark_status(
+                    pool.chain,
+                    old_token_id,
+                    PositionState.RECOVERY_REQUIRED,
+                    "stake",
+                    stake_tx,
+                    new_token_id,
+                    error_reason=reason,
+                )
+                self.journal.mark_recovery_error(pool.chain, old_token_id, reason)
+                self._notify_recovery_required(pool, old_token_id, reason)
+                return {
+                    "pool": pool.name,
+                    "token_id": old_token_id,
+                    "new_token_id": new_token_id,
+                    "state": PositionState.RECOVERY_REQUIRED.value,
+                    "recovery": "STAKE_CONFIRMATION_REQUIRED",
+                    "action_taken": True,
+                    "error": reason,
+                }
             self.journal.mark_status(pool.chain, old_token_id, PositionState.REMINTED, "stake", stake_tx, new_token_id)
         else:
             self.journal.mark_status(
@@ -2302,34 +2390,72 @@ class ConfiguredPoolRebalancer:
         )
         final_state = minted_state
         if position.is_staked:
+            stake_tx = None
             try:
                 stake_tx = adapter.stake(new_token_id)
-                self._confirm_stake_with_retry(pool, adapter, position.token_id, new_token_id)
+                stake_confirmed = self._confirm_stake_with_retry(
+                    pool,
+                    adapter,
+                    position.token_id,
+                    new_token_id,
+                )
             except Exception as exc:
                 reason = f"recovery stake failed: {exc}"
+                failed_state = (
+                    PositionState.MINTED_UNSTAKED
+                    if self._is_definite_prebroadcast_stake_error(exc)
+                    else PositionState.RECOVERY_REQUIRED
+                )
                 self.journal.mark_status(
                     pool.chain,
                     position.token_id,
-                    PositionState.MINTED_UNSTAKED,
+                    failed_state,
                     error_reason=reason,
                 )
-                self._notify_partial_action(
-                    pool,
-                    position.token_id,
-                    "stake",
-                    PositionState.MINTED_UNSTAKED,
-                    reason,
-                    "recovery will retry staking the minted NFT",
-                    new_token_id=new_token_id,
-                )
+                if failed_state == PositionState.MINTED_UNSTAKED:
+                    self._notify_partial_action(
+                        pool,
+                        position.token_id,
+                        "stake",
+                        failed_state,
+                        reason,
+                        "recovery will retry staking the minted NFT",
+                        new_token_id=new_token_id,
+                    )
+                else:
+                    self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                    self._notify_recovery_required(pool, position.token_id, reason)
                 self._notify_discord_pnl_after_delay(pool, position.owner, position.token_id, new_token_id)
                 return {
                     "pool": pool.name,
                     "token_id": position.token_id,
                     "new_token_id": new_token_id,
-                    "state": PositionState.MINTED_UNSTAKED.value,
+                    "state": failed_state.value,
                     "recovery": "MINTED_STAKE_FAILED",
                     "action_taken": True,
+                }
+            if not stake_confirmed:
+                reason = "stake transaction succeeded but staking contract membership was not confirmed"
+                self.journal.mark_status(
+                    pool.chain,
+                    position.token_id,
+                    PositionState.RECOVERY_REQUIRED,
+                    "stake",
+                    stake_tx,
+                    new_token_id,
+                    error_reason=reason,
+                )
+                self.journal.mark_recovery_error(pool.chain, position.token_id, reason)
+                self._notify_recovery_required(pool, position.token_id, reason)
+                self._notify_discord_pnl_after_delay(pool, position.owner, position.token_id, new_token_id)
+                return {
+                    "pool": pool.name,
+                    "token_id": position.token_id,
+                    "new_token_id": new_token_id,
+                    "state": PositionState.RECOVERY_REQUIRED.value,
+                    "recovery": "STAKE_CONFIRMATION_REQUIRED",
+                    "action_taken": True,
+                    "error": reason,
                 }
             self.journal.mark_status(
                 pool.chain,
@@ -2390,7 +2516,7 @@ class ConfiguredPoolRebalancer:
                         attempt,
                     )
                     return True
-                last_error = "new token not found in MasterChef userPositionInfos"
+                last_error = "new token not found in staking contract"
             except Exception as exc:
                 last_error = str(exc)
             if attempt < attempts:
@@ -2414,6 +2540,19 @@ class ConfiguredPoolRebalancer:
             last_error,
         )
         return False
+
+    @staticmethod
+    def _is_definite_prebroadcast_stake_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "gas required exceeds",
+                "intrinsic gas too low",
+                "always failing transaction",
+                "execution reverted",
+            )
+        )
 
     def _mark_manual_recovery(self, pool: PoolConfig, old_token_id: int, reason: str) -> dict:
         log_block(
