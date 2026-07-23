@@ -1,0 +1,57 @@
+{
+  "version": 2,
+  "dry_run": true,
+  "interval_seconds": 1800,
+  "use_legacy_position_cache": false,
+  "use_db_position_cache": true,
+  "db_position_cache_source": "positions_cache",
+  "wallets": {
+    "main": {
+      "bot_wallet": "0xYOUR_WALLET_ADDRESS",
+      "private_key_prefix_env": "CONFIGURED_REBALANCER_MAIN_PRIVATE_KEY_PREFIX"
+    }
+  },
+  "pool_defaults": {
+    "dex_type": "pancake_v3",
+    "wallet": "main",
+    "slippage_bps": 10,
+    "max_swap_price_impact_pct": 0.5,
+    "execute_burn": false,
+    "auto_bootstrap_start_block": true,
+    "max_jobs_per_cycle": 1,
+    "auto_compound": {
+      "enabled": true,
+      "min_interval_seconds": 21600,
+      "min_compound_usd": 3.0,
+      "gas_cost_multiplier": 2.0,
+      "min_range_buffer_ratio": 0.1,
+      "max_jobs_per_cycle": 1
+    }
+  },
+  "pools": [
+    {
+      "name": "REPLACE_WITH_POOL_NAME",
+      "chain": "BNB",
+      "pool_address": "0xYOUR_POOL_ADDRESS",
+      "pid": null,
+      "rebalance_range": {
+        "mode": "price_percent",
+        "lower_percent": -10.0,
+        "upper_percent": 20.0
+      }
+    }
+  ],
+  "pnl": {
+    "native_prices_usd": {}
+  },
+  "discord": {
+    "enabled": false
+  },
+  "gas_policy": {
+    "BNB": {
+      "mode": "fixed",
+      "gas_price_gwei": 0.05,
+      "max_fee_gwei": 0.08
+    }
+  }
+}

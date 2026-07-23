@@ -1887,7 +1887,7 @@ class AerodromeV3GaugeAdapter(PancakeV3MasterChefAdapter):
             return None
         if not self.gauge:
             raise RuntimeError("Aerodrome gauge address is not configured")
-        return self.executor.send(self.gauge.functions.withdraw(int(position.token_id)), "unstake", gas=450000)
+        return self.executor.send(self.gauge.functions.withdraw(int(position.token_id)), "unstake")
 
     def decrease_collect_withdraw(self, position: PositionSnapshot, slot0: Slot0) -> TxResult:
         deadline = int(time.time()) + self.pool.deadline_seconds

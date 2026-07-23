@@ -22,9 +22,9 @@
     "auto_compound": {
       "enabled": true,
       "min_interval_seconds": 21600,
-      "min_compound_usd": 3.0,
-      "gas_cost_multiplier": 3.0,
-      "min_range_buffer_ratio": 0.1,
+      "min_compound_usd": 1.0,
+      "gas_cost_multiplier": 2.0,
+      "min_range_buffer_ratio": 0.01,
       "max_jobs_per_cycle": 1
     }
   },
@@ -64,8 +64,21 @@
       "bootstrap_start_block": null,
       "rebalance_range": {
         "mode": "price_percent",
-        "lower_percent": -3.64,
-        "upper_percent": 2.32
+        "lower_percent": -2.64,
+        "upper_percent": 1.32
+      }
+    },
+    {
+      "name": "SYND-USDC-0.95",
+      "dex_type": "aerodrome_v3",
+      "wallet": "main",
+      "chain": "BAS",
+      "pool_address": "0x9dcbb8258e0015d6cb81061b3f5c47d5c5d6188f",
+      "bootstrap_start_block": null,
+      "rebalance_range": {
+        "mode": "price_percent",
+        "lower_percent": -32.53,
+        "upper_percent": 30.54
       }
     }
   ],
