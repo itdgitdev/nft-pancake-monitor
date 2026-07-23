@@ -21,6 +21,7 @@ DEPOSIT_TOPIC = "0x" + Web3.keccak(text="Deposit(address,uint256,uint256,uint256
 WITHDRAW_TOPIC = "0x" + Web3.keccak(text="Withdraw(address,address,uint256,uint256)").hex()
 POOL_CREATED_TOPIC = "0x" + Web3.keccak(text="PoolCreated(address,address,uint24,int24,address)").hex()
 AERODROME_POSITION_CACHE_SOURCE = "aerodrome_positions_cache"
+AERODROME_POOL_CHECKPOINT_SCOPE = "per_pool"
 TRANSFER_TOPIC = Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)"))
 
 
@@ -350,6 +351,18 @@ class PositionIndex:
         latest_block: int,
     ) -> dict:
         cached_block = int(cached.get("last_synced_block") or 0)
+        if (
+            cached_block
+            and pool.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}
+            and cached.get("stake_checkpoint_scope") != AERODROME_POOL_CHECKPOINT_SCOPE
+        ):
+            log.warning(
+                "Aerodrome module checkpoint ignored pool=%s cached_block=%s "
+                "reason=checkpoint_scope_unverified",
+                pool.name,
+                cached_block,
+            )
+            cached_block = 0
         db_block = int(db_snapshot.get("last_synced_block") or 0)
         db_token_count = len(db_snapshot.get("token_ids", []))
         db_pid_bootstrapped = bool(db_snapshot.get("pid_bootstrapped", False))
@@ -474,9 +487,20 @@ class PositionIndex:
             except (TypeError, ValueError):
                 continue
 
+        checkpoint, checkpoint_source = self._snapshot_checkpoint_for_pool(data, pool)
+        global_checkpoint = int(data.get("last_synced_block") or 0)
+        self._log_aerodrome_checkpoint(
+            pool,
+            "legacy_cache",
+            checkpoint,
+            checkpoint_source,
+            global_checkpoint,
+        )
         return {
             "token_ids": candidates,
-            "last_synced_block": int(data.get("last_synced_block") or 0),
+            "last_synced_block": checkpoint,
+            "global_last_synced_block": global_checkpoint,
+            "checkpoint_source": checkpoint_source,
             "source": str(path),
         }
 
@@ -498,9 +522,23 @@ class PositionIndex:
             return {"token_ids": set(), "last_synced_block": 0, "source": "db:missing", "pid_bootstrapped": False}
         data = snapshot.get("snapshot") or {}
         candidates, pid_bootstrapped = self._candidate_token_ids_from_snapshot(data, pool)
+        global_checkpoint = int(snapshot.get("last_synced_block") or data.get("last_synced_block") or 0)
+        if pool.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            checkpoint, checkpoint_source = self._snapshot_checkpoint_for_pool(data, pool)
+        else:
+            checkpoint, checkpoint_source = global_checkpoint, "global_last_synced_block"
+        self._log_aerodrome_checkpoint(
+            pool,
+            "db_position_cache",
+            checkpoint,
+            checkpoint_source,
+            global_checkpoint,
+        )
         return {
             "token_ids": candidates,
-            "last_synced_block": int(snapshot.get("last_synced_block") or data.get("last_synced_block") or 0),
+            "last_synced_block": checkpoint,
+            "global_last_synced_block": global_checkpoint,
+            "checkpoint_source": checkpoint_source,
             "source": f"db:{source}",
             "pid_bootstrapped": pid_bootstrapped,
             "position_count": int(snapshot.get("position_count") or 0),
@@ -510,6 +548,61 @@ class PositionIndex:
         if pool.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
             return AERODROME_POSITION_CACHE_SOURCE
         return self.db_cache_source
+
+    @staticmethod
+    def _snapshot_checkpoint_for_pool(data: dict, pool: PoolConfig) -> tuple[int, str]:
+        if pool.dex_type not in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            return int(data.get("last_synced_block") or 0), "global_last_synced_block"
+
+        pool_sync = data.get("pool_sync") or {}
+        if not isinstance(pool_sync, dict):
+            pool_sync = {}
+        state = pool_sync.get(pool.pool_address.lower())
+        if not isinstance(state, dict):
+            state = next(
+                (
+                    value
+                    for address, value in pool_sync.items()
+                    if str(address).lower() == pool.pool_address.lower() and isinstance(value, dict)
+                ),
+                {},
+            )
+
+        last_scanned = int(state.get("last_scanned_block") or 0)
+        if last_scanned > 0:
+            return last_scanned, "pool_last_scanned_block"
+
+        bootstrap_from = int(
+            state.get("bootstrap_from_block")
+            or state.get("gauge_creation_block")
+            or 0
+        )
+        if bootstrap_from > 0:
+            return bootstrap_from - 1, "pool_bootstrap_block"
+
+        return 0, "pool_checkpoint_missing"
+
+    @staticmethod
+    def _log_aerodrome_checkpoint(
+        pool: PoolConfig,
+        source: str,
+        checkpoint: int,
+        checkpoint_source: str,
+        global_checkpoint: int,
+    ) -> None:
+        if pool.dex_type not in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}:
+            return
+        write_log = log.warning if checkpoint_source == "pool_checkpoint_missing" else log.info
+        write_log(
+            "Aerodrome position checkpoint pool=%s source=%s checkpoint_source=%s "
+            "pool_checkpoint=%s global_last_synced_block=%s checkpoint_gap=%s",
+            pool.name,
+            source,
+            checkpoint_source,
+            checkpoint,
+            global_checkpoint,
+            max(0, global_checkpoint - checkpoint),
+        )
 
     def _candidate_token_ids_from_snapshot(self, data: dict, pool: PoolConfig) -> tuple[set[int], bool]:
         candidates: set[int] = set()
@@ -819,6 +912,11 @@ class PositionIndex:
         sync = sync or {}
         data = {
             "last_synced_block": last_synced_block,
+            "stake_checkpoint_scope": (
+                AERODROME_POOL_CHECKPOINT_SCOPE
+                if pool.dex_type in {DexType.AERODROME_V3, DexType.AERODROME_GAUGE}
+                else "global"
+            ),
             "npm_transfer_last_synced_block": int(sync.get("npm_transfer_last_synced_block") or 0),
             "token_ids": sorted(positions.keys()),
             "sync": {

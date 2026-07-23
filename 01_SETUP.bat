@@ -15,10 +15,10 @@ if not exist "latest_farms\configured_pool_rebalancer\cli.py" (
     goto :failed
 )
 
-py -3.13 --version >nul 2>&1
+py -3.13 -c "import encodings, venv, sys" >nul 2>&1
 if errorlevel 1 (
-    echo [FAIL] Python 3.13 was not found.
-    echo Install Python 3.13 from https://www.python.org/downloads/
+    echo [FAIL] Python 3.13 was not found or its installation is incomplete.
+    echo Install Python 3.13 from https://www.python.org/downloads/windows/
     goto :failed
 )
 echo [PASS] Python 3.13 found

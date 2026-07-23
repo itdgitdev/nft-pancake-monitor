@@ -20,7 +20,7 @@
     "auto_bootstrap_start_block": true,
     "max_jobs_per_cycle": 2,
     "auto_compound": {
-      "enabled": true,
+      "enabled": false,
       "min_interval_seconds": 21600,
       "min_compound_usd": 1.0,
       "gas_cost_multiplier": 2.0,
