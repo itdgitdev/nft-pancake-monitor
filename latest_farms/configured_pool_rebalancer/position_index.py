@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,6 +28,19 @@ TRANSFER_TOPIC = Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)
 
 class LogRangeTooLarge(RuntimeError):
     pass
+
+
+@dataclass
+class StakeLogSweepResult:
+    staked: set[int]
+    unstaked: set[int]
+    filter_count: int
+    logs_received: int
+    unique_logs: int
+
+    def __iter__(self):
+        yield self.staked
+        yield self.unstaked
 
 
 try:
@@ -83,25 +97,32 @@ class PositionIndex:
         from_block = int(sync["from_block"])
         swept_logs = False
         stake_candidates = set(cached_staked_ids)
+        stake_filter_count = 0
+        stake_logs_received = 0
+        stake_token_count = 0
 
         if from_block <= latest_block:
             event_contract = self._stake_event_contract_address(adapter)
-            event_topics = self._stake_event_topics(adapter)
-            if event_contract and event_topics:
-                staked, unstaked = self._sweep_stake_logs(
+            event_topic_filters = self._stake_event_topic_filters(adapter)
+            if event_contract and event_topic_filters:
+                sweep_result = self._sweep_stake_logs(
                     w3,
                     pool,
                     adapter,
                     event_contract,
-                    event_topics,
+                    event_topic_filters,
                     from_block,
                     latest_block,
                     pool.log_chunk_size,
                 )
+                staked, unstaked = sweep_result
                 token_ids.update(staked)
                 token_ids.update(unstaked)
                 stake_candidates.update(staked)
                 stake_candidates.difference_update(unstaked)
+                stake_filter_count = sweep_result.filter_count
+                stake_logs_received = sweep_result.logs_received
+                stake_token_count = len(staked | unstaked)
                 swept_logs = True
 
         enumerable_ids, enumerable_complete = self._enumerate_owned_token_ids(w3, pool)
@@ -130,7 +151,8 @@ class PositionIndex:
             if pos.owner.lower() in managed
         }
 
-        owned = self._batch_owned_token_ids(w3, pool, token_ids, managed)
+        owner_candidates = token_ids - set(positions)
+        owned = self._batch_owned_token_ids(w3, pool, owner_candidates, managed)
         if hasattr(adapter, "read_npm_positions"):
             npm_positions = adapter.read_npm_positions(owned, owners=owned)
         else:
@@ -173,7 +195,9 @@ class PositionIndex:
         )
         log.info(
             "position discovery pool=%s cache=%s db=%s legacy=%s seed=%s enumerable=%s "
-            "transfers=%s owner_checked=%s staked=%s unstaked=%s anchor_block=%s duration_ms=%s",
+            "transfers=%s stake_filter_count=%s stake_logs_received=%s stake_token_count=%s "
+            "verified_staked_count=%s owner_candidate_count=%s invalid_owner_count=%s "
+            "owner_checked=%s staked=%s unstaked=%s anchor_block=%s discovery_duration_ms=%s",
             pool.name,
             len(cached.get("token_ids", [])),
             len(db_snapshot.get("token_ids", [])),
@@ -181,7 +205,13 @@ class PositionIndex:
             len(pool.seed_token_ids),
             len(enumerable_ids),
             len(transfer_ids),
-            len(token_ids),
+            stake_filter_count,
+            stake_logs_received,
+            stake_token_count,
+            len(filtered.keys() & positions.keys()),
+            len(owner_candidates),
+            len(owner_candidates) - len(owned),
+            len(owner_candidates),
             sum(1 for value in filtered.values() if value.is_staked),
             sum(1 for value in filtered.values() if not value.is_staked),
             latest_block,
@@ -669,6 +699,20 @@ class PositionIndex:
                 pass
         return [DEPOSIT_TOPIC, WITHDRAW_TOPIC]
 
+    def _stake_event_topic_filters(
+        self,
+        adapter: DexAdapter,
+    ) -> list[list[str | list[str]]]:
+        if hasattr(adapter, "stake_event_topic_filters"):
+            try:
+                filters = adapter.stake_event_topic_filters()
+                if filters:
+                    return filters
+            except Exception:
+                pass
+        topics = self._stake_event_topics(adapter)
+        return [[topics]] if topics else []
+
     def _parse_stake_event(self, adapter: DexAdapter, event) -> tuple[str, int] | None:
         if hasattr(adapter, "parse_stake_event"):
             parsed = adapter.parse_stake_event(event)
@@ -691,24 +735,40 @@ class PositionIndex:
         pool: PoolConfig,
         adapter: DexAdapter,
         event_contract_address: str,
-        event_topics: list[str],
+        event_topic_filters: list[list[str | list[str]]],
         from_block: int,
         to_block: int,
         chunk_size: int,
-    ) -> tuple[set[int], set[int]]:
+    ) -> StakeLogSweepResult:
+        if event_topic_filters and isinstance(event_topic_filters[0], str):
+            event_topic_filters = [[event_topic_filters]]
         staked: set[int] = set()
         unstaked: set[int] = set()
         rpc_sources = self._log_rpc_sources(w3, pool)
+        logs_received = 0
+        unique_log_count = 0
         for start in range(from_block, to_block + 1, chunk_size):
             end = min(start + chunk_size - 1, to_block)
-            query = {
-                "fromBlock": start,
-                "toBlock": end,
-                "address": Web3.to_checksum_address(event_contract_address),
-                "topics": [event_topics],
+            chunk_logs: list = []
+            for topic_filter in event_topic_filters:
+                query = {
+                    "fromBlock": start,
+                    "toBlock": end,
+                    "address": Web3.to_checksum_address(event_contract_address),
+                    "topics": topic_filter,
+                }
+                chunk_logs.extend(
+                    self._get_logs_with_adaptive_range(rpc_sources, pool, start, end, query)
+                )
+
+            logs_received += len(chunk_logs)
+            unique_logs = {
+                self._stake_log_identity(event): event
+                for event in chunk_logs
             }
-            logs = self._get_logs_with_adaptive_range(rpc_sources, pool, start, end, query)
-            for event in logs:
+            ordered_logs = sorted(unique_logs.values(), key=self._stake_log_sort_key)
+            unique_log_count += len(ordered_logs)
+            for event in ordered_logs:
                 parsed = self._parse_stake_event(adapter, event)
                 if not parsed:
                     continue
@@ -719,7 +779,13 @@ class PositionIndex:
                 elif action == "unstake":
                     unstaked.add(token_id)
                     staked.discard(token_id)
-        return staked, unstaked
+        return StakeLogSweepResult(
+            staked=staked,
+            unstaked=unstaked,
+            filter_count=len(event_topic_filters),
+            logs_received=logs_received,
+            unique_logs=unique_log_count,
+        )
 
     def _sweep_masterchef_logs(
         self,
@@ -737,16 +803,58 @@ class PositionIndex:
             def parse_stake_event(self, event):
                 return None
 
-        return self._sweep_stake_logs(
+        result = self._sweep_stake_logs(
             w3,
             pool,
             _MasterChefEventAdapter(),
             masterchef_address,
-            [DEPOSIT_TOPIC, WITHDRAW_TOPIC],
+            [[[DEPOSIT_TOPIC, WITHDRAW_TOPIC]]],
             from_block,
             to_block,
             chunk_size,
         )
+        return result.staked, result.unstaked
+
+    @classmethod
+    def _stake_log_identity(cls, event) -> tuple:
+        transaction_hash = event.get("transactionHash")
+        log_index = event.get("logIndex")
+        if transaction_hash is not None and log_index is not None:
+            return cls._log_hex(transaction_hash), cls._log_int(log_index)
+        topics = tuple(cls._log_hex(topic) for topic in (event.get("topics") or []))
+        return (
+            cls._log_int(event.get("blockNumber")),
+            cls._log_int(event.get("transactionIndex")),
+            cls._log_int(log_index),
+            topics,
+            cls._log_hex(event.get("data")),
+        )
+
+    @classmethod
+    def _stake_log_sort_key(cls, event) -> tuple[int, int, int]:
+        return (
+            cls._log_int(event.get("blockNumber")),
+            cls._log_int(event.get("transactionIndex")),
+            cls._log_int(event.get("logIndex")),
+        )
+
+    @staticmethod
+    def _log_int(value) -> int:
+        if value is None:
+            return 0
+        if isinstance(value, str):
+            return int(value, 0)
+        if isinstance(value, (bytes, bytearray)):
+            return int.from_bytes(value, "big")
+        return int(value)
+
+    @staticmethod
+    def _log_hex(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.lower()
+        return Web3.to_hex(value).lower()
 
     def _get_logs_with_adaptive_range(
         self,

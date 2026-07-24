@@ -121,6 +121,10 @@ class DexAdapter:
     def stake_event_topics(self) -> list[str]:
         return []
 
+    def stake_event_topic_filters(self) -> list[list[str | list[str]]]:
+        topics = self.stake_event_topics()
+        return [[topics]] if topics else []
+
     def parse_stake_event(self, event) -> tuple[str, int] | None:
         return None
 
@@ -149,6 +153,32 @@ class PancakeV3MasterChefAdapter(DexAdapter):
 
     def stake_event_topics(self) -> list[str]:
         return [MASTER_CHEF_DEPOSIT_TOPIC, MASTER_CHEF_WITHDRAW_TOPIC]
+
+    def stake_event_topic_filters(self) -> list[list[str | list[str]]]:
+        managed_wallets = {
+            Web3.to_checksum_address(wallet)
+            for wallet in (*self.pool.managed_wallets, self.pool.bot_wallet)
+        }
+        wallet_topics = sorted(
+            "0x" + wallet[2:].lower().rjust(64, "0")
+            for wallet in managed_wallets
+        )
+        wallet_filter: str | list[str]
+        if len(wallet_topics) == 1:
+            wallet_filter = wallet_topics[0]
+        else:
+            wallet_filter = wallet_topics
+
+        deposit_filter: list[str | list[str]] = [
+            MASTER_CHEF_DEPOSIT_TOPIC,
+            wallet_filter,
+        ]
+        if self.pool.pid is not None:
+            deposit_filter.append("0x" + format(int(self.pool.pid), "064x"))
+        return [
+            deposit_filter,
+            [MASTER_CHEF_WITHDRAW_TOPIC, wallet_filter],
+        ]
 
     def parse_stake_event(self, event) -> tuple[str, int] | None:
         topics = event.get("topics") or []
@@ -1753,6 +1783,9 @@ class AerodromeV3GaugeAdapter(PancakeV3MasterChefAdapter):
 
     def stake_event_topics(self) -> list[str]:
         return [AERODROME_GAUGE_DEPOSIT_TOPIC, AERODROME_GAUGE_WITHDRAW_TOPIC]
+
+    def stake_event_topic_filters(self) -> list[list[str | list[str]]]:
+        return [[self.stake_event_topics()]]
 
     def parse_stake_event(self, event) -> tuple[str, int] | None:
         topics = event.get("topics") or []
